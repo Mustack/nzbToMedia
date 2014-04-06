@@ -14,6 +14,7 @@ from nzbtomedia.nzbToMediaUtil import getDirectorySize, convert_to_ascii
 Logger = logging.getLogger()
 
 class autoProcessMovie:
+
     def get_imdb(self, nzbName, dirName):
         imdbid = ""
 
@@ -78,7 +79,7 @@ class autoProcessMovie:
                         library2.append(item["identifiers"]["imdb"])
                 release2 = [item["releases"] for item in result["movies"]]
                 moviestatus2 = [item["status"] for item in result["movies"]]
-            except:
+            except Exception, e:
                 Logger.exception("Unable to parse json data for movies")
                 break
 
