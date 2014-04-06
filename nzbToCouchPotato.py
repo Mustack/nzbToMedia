@@ -1,4 +1,10 @@
 #!/usr/bin/env python
+
+# adds lib directory to system path
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'lib')))
+
 #
 ##############################################################################
 ### NZBGET POST-PROCESSING SCRIPT                                          ###
@@ -72,7 +78,7 @@
 
 # Media Extensions
 #
-# This is a list of media extensions that may be transcoded if transcoder is enabled below.
+# This is a list of media extensions that are used to verify that the download does contain valid media.
 #mediaExtensions=.mkv,.avi,.divx,.xvid,.mov,.wmv,.mp4,.mpg,.mpeg,.vob,.iso
 
 ## Transcoder
@@ -122,24 +128,28 @@
 ##############################################################################
 
 import logging
+from nzbtomedia.autoProcess.autoProcessMovie import autoProcessMovie
+from nzbtomedia.migratecfg import migratecfg
+from nzbtomedia.nzbToMediaConfig import config
+from nzbtomedia.nzbToMediaUtil import nzbtomedia_configure_logging, WakeUp, get_dirnames
 
-import autoProcess.migratecfg as migratecfg
-import autoProcess.autoProcessMovie as autoProcessMovie
-from autoProcess.nzbToMediaEnv import *
-from autoProcess.nzbToMediaUtil import *
+# run migrate to convert old cfg to new style cfg plus fix any cfg missing values/options.
+if migratecfg().migrate():
+    # check to write settings from nzbGet UI to autoProcessMedia.cfg.
+    if os.environ.has_key('NZBOP_SCRIPTDIR'):
+        migratecfg().addnzbget()
 
-#check to migrate old cfg before trying to load.
-if os.path.isfile(os.path.join(os.path.dirname(sys.argv[0]), "autoProcessMedia.cfg.sample")):
-    migratecfg.migrate()
-# check to write settings from nzbGet UI to autoProcessMedia.cfg.
-if os.environ.has_key('NZBOP_SCRIPTDIR'):
-    migratecfg.addnzbget()
+    nzbtomedia_configure_logging(config.LOG_FILE)
+    Logger = logging.getLogger(__name__)
+    Logger.info("====================")  # Seperate old from new log
+    Logger.info("nzbToCouchPotato %s", config.NZBTOMEDIA_VERSION)
 
-nzbtomedia_configure_logging(LOG_FILE)
-Logger = logging.getLogger(__name__)
+    Logger.info("MAIN: Loading config from %s", config.CONFIG_FILE)
+else:
+    sys.exit(-1)
 
-Logger.info("====================") # Seperate old from new log
-Logger.info("nzbToCouchPotato %s", VERSION)
+# setup sections and categories
+categories = config.get_categories(["CouchPotato"])
 
 WakeUp()
 
@@ -150,24 +160,19 @@ if os.environ.has_key('NZBOP_SCRIPTDIR') and not os.environ['NZBOP_VERSION'][0:5
 
     # NZBGet argv: all passed as environment variables.
     clientAgent = "nzbget"
-    # Exit codes used by NZBGet
-    POSTPROCESS_PARCHECK=92
-    POSTPROCESS_SUCCESS=93
-    POSTPROCESS_ERROR=94
-    POSTPROCESS_NONE=95
 
     # Check nzbget.conf options
     status = 0
 
     if os.environ['NZBOP_UNPACK'] != 'yes':
         Logger.error("MAIN: Please enable option \"Unpack\" in nzbget configuration file, exiting")
-        sys.exit(POSTPROCESS_ERROR)
+        sys.exit(config.NZBGET_POSTPROCESS_ERROR)
 
     # Check par status
     if os.environ['NZBPP_PARSTATUS'] == '3':
         Logger.warning("MAIN: Par-check successful, but Par-repair disabled, exiting")
         Logger.info("MAIN: Please check your Par-repair settings for future downloads.")
-        sys.exit(POSTPROCESS_NONE)
+        sys.exit(config.NZBGET_POSTPROCESS_NONE)
 
     if os.environ['NZBPP_PARSTATUS'] == '1' or os.environ['NZBPP_PARSTATUS'] == '4':
         Logger.warning("MAIN: Par-repair failed, setting status \"failed\"")
@@ -200,9 +205,9 @@ if os.environ.has_key('NZBOP_SCRIPTDIR') and not os.environ['NZBOP_VERSION'][0:5
     if os.environ.has_key('NZBPR_COUCHPOTATO'):
         download_id = os.environ['NZBPR_COUCHPOTATO']
     Logger.info("MAIN: Script triggered from NZBGet, starting autoProcessMovie...")
-    result = autoProcessMovie.process(os.environ['NZBPP_DIRECTORY'], os.environ['NZBPP_NZBNAME'], status, clientAgent, download_id)
+    result = autoProcessMovie().process(os.environ['NZBPP_DIRECTORY'], os.environ['NZBPP_NZBNAME'], status, clientAgent, download_id)
 # SABnzbd Pre 0.7.17
-elif len(sys.argv) == SABNZB_NO_OF_ARGUMENTS:
+elif len(sys.argv) == config.SABNZB_NO_OF_ARGUMENTS:
     # SABnzbd argv:
     # 1 The final directory of the job (full path)
     # 2 The original name of the NZB file
@@ -213,9 +218,9 @@ elif len(sys.argv) == SABNZB_NO_OF_ARGUMENTS:
     # 7 Status of post processing. 0 = OK, 1=failed verification, 2=failed unpack, 3=1+2
     Logger.info("MAIN: Script triggered from SABnzbd, starting autoProcessMovie...")
     clientAgent = "sabnzbd"
-    result = autoProcessMovie.process(sys.argv[1], sys.argv[2], sys.argv[7], clientAgent)
+    result = autoProcessMovie().process(sys.argv[1], sys.argv[2], sys.argv[7], clientAgent)
 # SABnzbd 0.7.17+
-elif len(sys.argv) >= SABNZB_0717_NO_OF_ARGUMENTS:
+elif len(sys.argv) >= config.SABNZB_0717_NO_OF_ARGUMENTS:
     # SABnzbd argv:
     # 1 The final directory of the job (full path)
     # 2 The original name of the NZB file
@@ -227,18 +232,26 @@ elif len(sys.argv) >= SABNZB_0717_NO_OF_ARGUMENTS:
     # 8 Failure URL
     Logger.info("MAIN: Script triggered from SABnzbd 0.7.17+, starting autoProcessMovie...")
     clientAgent = "sabnzbd"
-    result = autoProcessMovie.process(sys.argv[1], sys.argv[2], sys.argv[7], clientAgent)
+    result = autoProcessMovie().process(sys.argv[1], sys.argv[2], sys.argv[7], clientAgent)
 else:
+    result = 0
+
     Logger.warn("MAIN: Invalid number of arguments received from client.")
     Logger.info("MAIN: Running autoProcessMovie as a manual run...")
-    clientAgent = "manual"
-    result = autoProcessMovie.process('Manual Run', 'Manual Run', 0, clientAgent)
+
+    for section, category in categories.items():
+        for dirName in get_dirnames(section, category):
+            Logger.info("MAIN: Calling " + section + ":" + category + " to post-process: %s", dirName)
+            results = autoProcessMovie().process(dirName, dirName, 0)
+            if results != 0:
+                result = 1
+                Logger.info("MAIN: A problem was reported in the autoProcessMovie script.")
 
 if result == 0:
     Logger.info("MAIN: The autoProcessMovie script completed successfully.")
     if os.environ.has_key('NZBOP_SCRIPTDIR'): # return code for nzbget v11
-        sys.exit(POSTPROCESS_SUCCESS)
+        sys.exit(config.NZBGET_POSTPROCESS_SUCCESS)
 else:
     Logger.info("MAIN: A problem was reported in the autoProcessMovie script.")
     if os.environ.has_key('NZBOP_SCRIPTDIR'): # return code for nzbget v11
-        sys.exit(POSTPROCESS_ERROR)
+        sys.exit(config.NZBGET_POSTPROCESS_ERROR)

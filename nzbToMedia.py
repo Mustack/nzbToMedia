@@ -1,4 +1,10 @@
 #!/usr/bin/env python
+
+# adds lib directory to system path
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'lib')))
+
 #
 ##############################################################################
 ### NZBGET POST-PROCESSING SCRIPT                                          ###
@@ -222,7 +228,7 @@
 
 # Media Extensions
 #
-# This is a list of media extensions that may be transcoded if transcoder is enabled below.
+# This is a list of media extensions that are used to verify that the download does contain valid media.
 #mediaExtensions=.mkv,.avi,.divx,.xvid,.mov,.wmv,.mp4,.mpg,.mpeg,.vob,.iso
 
 ## Transcoder
@@ -270,55 +276,98 @@
 
 ### NZBGET POST-PROCESSING SCRIPT                                          ###
 ##############################################################################
-
-import shutil
 import logging
+from nzbtomedia.autoProcess.autoProcessComics import autoProcessComics
+from nzbtomedia.autoProcess.autoProcessGames import autoProcessGames
+from nzbtomedia.autoProcess.autoProcessMovie import autoProcessMovie
+from nzbtomedia.autoProcess.autoProcessMusic import autoProcessMusic
+from nzbtomedia.autoProcess.autoProcessTV import autoProcessTV
+from nzbtomedia.migratecfg import migratecfg
+from nzbtomedia.nzbToMediaConfig import config
+from nzbtomedia.nzbToMediaUtil import nzbtomedia_configure_logging, WakeUp, get_dirnames
 
-import autoProcess.autoProcessComics as autoProcessComics
-import autoProcess.autoProcessGames as autoProcessGames
-import autoProcess.autoProcessMusic as autoProcessMusic
-import autoProcess.autoProcessMovie as autoProcessMovie
-import autoProcess.autoProcessTV as autoProcessTV
-import autoProcess.migratecfg as migratecfg
-from autoProcess.nzbToMediaEnv import *
-from autoProcess.nzbToMediaUtil import *
+# post-processing
+def process(nzbDir, inputName=None, status=0, clientAgent='manual', download_id=None, inputCategory=None):
+    if inputCategory in sections["CouchPotato"]:
+        if isinstance(nzbDir, list):
+            for dirName in nzbDir:
+                Logger.info("MAIN: Calling CouchPotatoServer to post-process: %s", inputName)
+                result =  autoProcessMovie().process(dirName, dirName, status, clientAgent, download_id, inputCategory)
+                if result != 0:
+                    return result
+        else:
+            Logger.info("MAIN: Calling CouchPotatoServer to post-process: %s", inputName)
+            return autoProcessMovie().process(nzbDir, inputName, status, clientAgent, download_id, inputCategory)
+    elif inputCategory in sections["SickBeard"]:
+        if isinstance(nzbDir, list):
+            for dirName in nzbDir:
+                Logger.info("MAIN: Calling Sick-Beard to post-process: %s", inputName)
+                result = autoProcessTV().processEpisode(dirName, dirName, status, clientAgent, inputCategory)
+                if result !=0:
+                    return result
+        else:
+            Logger.info("MAIN: Calling Sick-Beard to post-process: %s", inputName)
+            return autoProcessTV().processEpisode(nzbDir, inputName, status, clientAgent, inputCategory)
+    elif inputCategory in sections["HeadPhones"]:
+        if isinstance(nzbDir, list):
+            for dirName in nzbDir:
+                Logger.info("MAIN: Calling Headphones to post-process: %s", dirName)
+                result = autoProcessMusic().process(dirName, dirName, status, clientAgent, inputCategory)
+                if result != 0:
+                    return result
+        else:
+            Logger.info("MAIN: Calling HeadPhones to post-process: %s", inputName)
+            return autoProcessMusic().process(nzbDir, inputName, status, clientAgent, inputCategory)
+    elif inputCategory in sections["Mylar"]:
+        if isinstance(nzbDir, list):
+            for dirName in nzbDir:
+                Logger.info("MAIN: Calling Mylar to post-process: %s", dirName)
+                result = autoProcessComics().processEpisode(dirName, dirName, status, clientAgent, inputCategory)
+                if result != 0:
+                    return result
+        else:
+            Logger.info("MAIN: Calling Mylar to post-process: %s", inputName)
+            return autoProcessComics().processEpisode(nzbDir, inputName, status, clientAgent, inputCategory)
+    elif inputCategory in sections["Gamez"]:
+        if isinstance(nzbDir, list):
+            for dirName in nzbDir:
+                Logger.info("MAIN: Calling Gamez to post-process: %s", dirName)
+                result = autoProcessGames().process(dirName, dirName, status, clientAgent, inputCategory)
+                if result != 0:
+                    return result
+        else:
+            Logger.info("MAIN: Calling Gamez to post-process: %s", inputName)
+            return autoProcessGames().process(nzbDir, inputName, status, clientAgent, inputCategory)
+    else:
+        Logger.warning("MAIN: The download category %s does not match any category defined in autoProcessMedia.cfg. Exiting.", inputCategory)
+        return -1
 
-# Exit codes used by NZBGet
-POSTPROCESS_PARCHECK = 92
-POSTPROCESS_SUCCESS = 93
-POSTPROCESS_ERROR = 94
-POSTPROCESS_NONE = 95
+########################################################################################################################
 
 # run migrate to convert old cfg to new style cfg plus fix any cfg missing values/options.
-if config(SAMPLE_CONFIG_FILE):
-    migratecfg.migrate()
-elif config():
-    shutil.copyfile(CONFIG_FILE, SAMPLE_CONFIG_FILE)
-    migratecfg.migrate()
+if migratecfg().migrate():
+    # check to write settings from nzbGet UI to autoProcessMedia.cfg.
+    if os.environ.has_key('NZBOP_SCRIPTDIR'):
+        migratecfg().addnzbget()
 
-# check to write settings from nzbGet UI to autoProcessMedia.cfg.
-if config() and os.environ.has_key('NZBOP_SCRIPTDIR'):
-    migratecfg.addnzbget()
+    nzbtomedia_configure_logging(config.LOG_FILE)
 
-nzbtomedia_configure_logging(LOG_FILE)
-Logger = logging.getLogger(__name__)
+    Logger = logging.getLogger()
+    Logger.info("====================")  # Seperate old from new log
+    Logger.info("nzbToMedia %s", config.NZBTOMEDIA_VERSION)
 
-Logger.info("====================") # Seperate old from new log
-Logger.info("nzbToMedia %s", VERSION)
+    Logger.info("MAIN: Loading config from %s", config.CONFIG_FILE)
+else:
+    print("Unable to find " + config.CONFIG_FILE + " or " + config.SAMPLE_CONFIG_FILE)
+    sys.exit(-1)
+
+# setup sections and categories
+sections = config.get_categories(["CouchPotato","SickBeard","HeadPhones","Mylar","Gamez"])
 
 WakeUp()
 
-if not config():
-    Logger.error("MAIN: You need an autoProcessMedia.cfg file - did you rename and edit the .sample?")
-    sys.exit(-1)
-
-Logger.info("MAIN: Loading config from %s", CONFIG_FILE)
-
-cpsCategory = (config().get("CouchPotato", "cpsCategory")).split(',')                 # movie
-sbCategory = (config().get("SickBeard", "sbCategory")).split(',')                     # tv
-hpCategory = (config().get("HeadPhones", "hpCategory")).split(',')                    # music
-mlCategory = (config().get("Mylar", "mlCategory")).split(',')                         # comics
-gzCategory = (config().get("Gamez", "gzCategory")).split(',')                         # games
+# Post-Processing Result
+result = 0
 
 # NZBGet V11+
 # Check if the script is called from nzbget 11.0 or later
@@ -333,13 +382,13 @@ if os.environ.has_key('NZBOP_SCRIPTDIR') and not os.environ['NZBOP_VERSION'][0:5
 
     if os.environ['NZBOP_UNPACK'] != 'yes':
         Logger.error("MAIN: Please enable option \"Unpack\" in nzbget configuration file, exiting")
-        sys.exit(POSTPROCESS_ERROR)
+        sys.exit(config.NZBGET_POSTPROCESS_ERROR)
 
     # Check par status
     if os.environ['NZBPP_PARSTATUS'] == '3':
         Logger.warning("MAIN: Par-check successful, but Par-repair disabled, exiting")
         Logger.info("MAIN: Please check your Par-repair settings for future downloads.")
-        sys.exit(POSTPROCESS_NONE)
+        sys.exit(config.NZBGET_POSTPROCESS_NONE)
 
     if os.environ['NZBPP_PARSTATUS'] == '1' or os.environ['NZBPP_PARSTATUS'] == '4':
         Logger.warning("MAIN: Par-repair failed, setting status \"failed\"")
@@ -369,11 +418,11 @@ if os.environ.has_key('NZBOP_SCRIPTDIR') and not os.environ['NZBOP_VERSION'][0:5
 
     # All checks done, now launching the script.
     download_id = ""
-    if os.environ.has_key('NZBPR_COUCHPOTATO'):
-        download_id = os.environ['NZBPR_COUCHPOTATO']
-    nzbDir, inputName, inputCategory = (os.environ['NZBPP_DIRECTORY'], os.environ['NZBPP_NZBFILENAME'], os.environ['NZBPP_CATEGORY'])
+    if os.environ.has_key('NZBPR_COUCHPOTATO'):download_id = os.environ['NZBPR_COUCHPOTATO']
+    result = process(os.environ['NZBPP_DIRECTORY'], inputName=os.environ['NZBPP_NZBFILENAME'], clientAgent = "nzbget", inputCategory=os.environ['NZBPP_CATEGORY'])
+    if result != 0: Logger.info("MAIN: A problem was reported in the autoProcess* script.")
 # SABnzbd Pre 0.7.17
-elif len(sys.argv) == SABNZB_NO_OF_ARGUMENTS:
+elif len(sys.argv) == config.SABNZB_NO_OF_ARGUMENTS:
     # SABnzbd argv:
     # 1 The final directory of the job (full path)
     # 2 The original name of the NZB file
@@ -383,10 +432,10 @@ elif len(sys.argv) == SABNZB_NO_OF_ARGUMENTS:
     # 6 Group that the NZB was posted in e.g. alt.binaries.x
     # 7 Status of post processing. 0 = OK, 1=failed verification, 2=failed unpack, 3=1+2
     Logger.info("MAIN: Script triggered from SABnzbd")
-    clientAgent = "sabnzbd"
-    nzbDir, inputName, status, inputCategory, download_id = (sys.argv[1], sys.argv[2], sys.argv[7], sys.argv[5], '')
+    result = process(sys.argv[1], inputName=sys.argv[2], status=sys.argv[7], inputCategory=sys.argv[5], clientAgent = "sabnzbd", download_id='')
+    if result != 0: Logger.info("MAIN: A problem was reported in the autoProcess* script.")
 # SABnzbd 0.7.17+
-elif len(sys.argv) >= SABNZB_0717_NO_OF_ARGUMENTS:
+elif len(sys.argv) >= config.SABNZB_0717_NO_OF_ARGUMENTS:
     # SABnzbd argv:
     # 1 The final directory of the job (full path)
     # 2 The original name of the NZB file
@@ -397,50 +446,24 @@ elif len(sys.argv) >= SABNZB_0717_NO_OF_ARGUMENTS:
     # 7 Status of post processing. 0 = OK, 1=failed verification, 2=failed unpack, 3=1+2
     # 8 Failure URL
     Logger.info("MAIN: Script triggered from SABnzbd 0.7.17+")
-    clientAgent = "sabnzbd"
-    nzbDir, inputName, status, inputCategory, download_id = (sys.argv[1], sys.argv[2], sys.argv[7], sys.argv[5], '')
-else: # only CPS and SB supports this manual run for now.
-    clientAgent = "manual"
-    Logger.warn("MAIN: Invalid number of arguments received from client.")
-
-    Logger.info("MAIN: Running autoProcessMovie as a manual run...")
-    nzbDir, inputName, status, inputCategory, download_id = ('Manual Run', 'Manual Run', 0, cpsCategory[0], '')
-
-    Logger.info("MAIN: Running autoProcessTV as a manual run...")
-    dirNames = get_dirnames("SickBeard", sbCategory[0])
-    nzbDir, inputName, status, inputCategory, download_id = (dirNames, dirNames, 0, sbCategory[0], '')
-
-if inputCategory in cpsCategory:
-    Logger.info("MAIN: Calling CouchPotatoServer to post-process: %s", inputName)
-    result = autoProcessMovie.process(nzbDir, inputName, status, clientAgent, download_id, inputCategory)
-elif inputCategory in sbCategory:
-    result = 0
-    if isinstance(nzbDir, list):
-        for dirName in nzbDir:
-            Logger.info("MAIN: Calling Sick-Beard to post-process: %s", inputName)
-            result = autoProcessTV.processEpisode(dirName, dirName, status, clientAgent, inputCategory)
-            if result !=0:break
-    else:
-        Logger.info("MAIN: Calling Sick-Beard to post-process: %s", inputName)
-        result = autoProcessTV.processEpisode(nzbDir, inputName, status, clientAgent, inputCategory)
-elif inputCategory in hpCategory:
-    Logger.info("MAIN: Calling HeadPhones to post-process: %s", inputName)
-    result = autoProcessMusic.process(nzbDir, inputName, status, inputCategory)
-elif inputCategory in mlCategory:
-    Logger.info("MAIN: Calling Mylar to post-process: %s", inputName)
-    result = autoProcessComics.processEpisode(nzbDir, inputName, status, inputCategory)
-elif inputCategory in gzCategory:
-    Logger.info("MAIN: Calling Gamez to post-process: %s", inputName)
-    result = autoProcessGames.process(nzbDir, inputName, status, inputCategory)
+    result = process(sys.argv[1], inputName=sys.argv[2], status=sys.argv[7], inputCategory=sys.argv[5], clientAgent = "sabnzbd", download_id='')
+    if result != 0:Logger.info("MAIN: A problem was reported in the autoProcess* script.")
 else:
-    Logger.warning("MAIN: The download category %s does not match any category defined in autoProcessMedia.cfg. Exiting.", inputCategory)
-    sys.exit(POSTPROCESS_ERROR)
+    result = 0
+
+    Logger.warn("MAIN: Invalid number of arguments received from client.")
+    for section, categories in sections.items():
+        for category in categories:
+            dirnames = get_dirnames(section, category)
+            Logger.info("MAIN: Running " + section + ":" + category + " as a manual run...")
+            if process(dirnames, inputName=dirnames, status=0, inputCategory=category, clientAgent = "manual") != 0:
+                Logger.info("MAIN: A problem was reported when trying to manually run " + section + ":" + category + ".")
 
 if result == 0:
-    Logger.info("MAIN: The autoProcess* script completed successfully.")
+    Logger.info("MAIN: The nzbToMedia script completed successfully.")
     if os.environ.has_key('NZBOP_SCRIPTDIR'): # return code for nzbget v11
-        sys.exit(POSTPROCESS_SUCCESS)
+        sys.exit(config.NZBGET_POSTPROCESS_SUCCESS)
 else:
-    Logger.info("MAIN: A problem was reported in the autoProcess* script.")
+    Logger.info("MAIN: A problem was reported in the nzbToMedia script.")
     if os.environ.has_key('NZBOP_SCRIPTDIR'): # return code for nzbget v11
-        sys.exit(POSTPROCESS_ERROR)
+        sys.exit(config.NZBGET_POSTPROCESS_ERROR)

@@ -1,24 +1,30 @@
 #!/usr/bin/env python
+# adds lib directory to system path
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'lib')))
 
-#System imports
-import logging
 import datetime
+import time
+import logging
+import re
+import shutil
 from subprocess import Popen
-
-# Custom imports
-import autoProcess.migratecfg as migratecfg
-import extractor.extractor as extractor
-import autoProcess.autoProcessComics as autoProcessComics
-import autoProcess.autoProcessGames as autoProcessGames 
-import autoProcess.autoProcessMusic as autoProcessMusic
-import autoProcess.autoProcessMovie as autoProcessMovie
-import autoProcess.autoProcessTV as autoProcessTV
-from autoProcess.nzbToMediaEnv import *
-from autoProcess.nzbToMediaUtil import *
-from autoProcess.autoSickBeardFork import autoFork
-from utorrent.client import UTorrentClient
-from transmissionrpc.client import Client as TransmissionClient
-from synchronousdeluge.client import DelugeClient
+from itertools import chain
+from nzbtomedia.autoProcess.autoProcessComics import autoProcessComics
+from nzbtomedia.autoProcess.autoProcessGames import autoProcessGames
+from nzbtomedia.autoProcess.autoProcessMovie import autoProcessMovie
+from nzbtomedia.autoProcess.autoProcessMusic import autoProcessMusic
+from nzbtomedia.autoProcess.autoProcessTV import autoProcessTV
+from nzbtomedia.extractor import extractor
+from nzbtomedia.migratecfg import migratecfg
+from nzbtomedia.nzbToMediaAutoFork import autoFork
+from nzbtomedia.nzbToMediaConfig import config
+from nzbtomedia.nzbToMediaUtil import category_search, safeName, is_sample, copy_link, WakeUp, parse_args, flatten, \
+    nzbtomedia_configure_logging
+from nzbtomedia.synchronousdeluge.client import DelugeClient
+from nzbtomedia.utorrent.client import UTorrentClient
+from nzbtomedia.transmissionrpc.client import Client as TransmissionClient
 
 def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
 
@@ -31,6 +37,11 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
     extractionSuccess = False
     copy_list = []
     useLink = useLink_in
+    file = None
+
+    delugeClient = ""
+    utorrentClass = ""
+    TransmissionClass = ""
 
     Logger.debug("MAIN: Received Directory: %s | Name: %s | Category: %s", inputDirectory, inputName, inputCategory)
 
@@ -38,18 +49,19 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
 
     Logger.debug("MAIN: Determined Directory: %s | Name: %s | Category: %s", inputDirectory, inputName, inputCategory)
 
-    sbFork, sbParams = autoFork()
-
-    if  inputCategory in sbCategory and sbFork in SICKBEARD_TORRENT and Torrent_ForceLink != 1:
-        Logger.info("MAIN: Calling SickBeard's %s branch to post-process: %s",sbFork ,inputName)
-        result = autoProcessTV.processEpisode(inputDirectory, inputName, int(0))
-        if result == 1:
-            Logger.info("MAIN: A problem was reported in the autoProcess* script.")
-        Logger.info("MAIN: All done.")
-        sys.exit()
+    if inputCategory in sections["SickBeard"]:
+        fork, fork_params = autoFork("SickBeard", inputCategory)
+        Torrent_NoLink = int(config()["SickBeard"][inputCategory]["Torrent_NoLink"])  # 0
+        if fork in config.SICKBEARD_TORRENT and Torrent_NoLink == 1:
+            Logger.info("MAIN: Calling SickBeard's %s branch to post-process: %s",fork ,inputName)
+            result = autoProcessTV().processEpisode(inputDirectory, inputName, 0)
+            if result != 0:
+                Logger.info("MAIN: A problem was reported in the autoProcess* script.")
+            Logger.info("MAIN: All done.")
+            sys.exit()
 
     outputDestination = ""
-    for category in categories:
+    for section, category in sections.items():
         if category == inputCategory:
             if os.path.basename(inputDirectory) == inputName and os.path.isdir(inputDirectory):
                 Logger.info("MAIN: Download is a directory")
@@ -63,7 +75,7 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
             continue
     if outputDestination == "":
         if inputCategory == "":
-            inputCategory = "UNCAT" 
+            inputCategory = "UNCAT"
         if os.path.basename(inputDirectory) == inputName and os.path.isdir(inputDirectory):
             Logger.info("MAIN: Download is a directory")
             outputDestination = os.path.normpath(os.path.join(outputDirectory, inputCategory, safeName(inputName)))
@@ -72,14 +84,14 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
             outputDestination = os.path.normpath(os.path.join(outputDirectory, inputCategory, os.path.splitext(safeName(inputName))[0]))
         Logger.info("MAIN: Output directory set to: %s", outputDestination)
 
-    processOnly = cpsCategory + sbCategory + hpCategory + mlCategory + gzCategory
+    processOnly = list(chain.from_iterable(sections.values()))
     if not "NONE" in user_script_categories: # if None, we only process the 5 listed.
         if "ALL" in user_script_categories: # All defined categories
             processOnly = categories
         processOnly.extend(user_script_categories) # Adds all categories to be processed by userscript.
 
     if not inputCategory in processOnly:
-        Logger.info("MAIN: No processing to be done for category: %s. Exiting", inputCategory) 
+        Logger.info("MAIN: No processing to be done for category: %s. Exiting", inputCategory)
         Logger.info("MAIN: All done.")
         sys.exit()
 
@@ -91,14 +103,14 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
                 utorrentClass = UTorrentClient(uTorrentWEBui, uTorrentUSR, uTorrentPWD)
             except:
                 Logger.exception("MAIN: Failed to connect to uTorrent")
-                utorrentClass = ""
+
         if clientAgent == 'transmission':
             try:
                 Logger.debug("MAIN: Connecting to %s: http://%s:%s", clientAgent, TransmissionHost, TransmissionPort)
                 TransmissionClass = TransmissionClient(TransmissionHost, TransmissionPort, TransmissionUSR, TransmissionPWD)
             except:
                 Logger.exception("MAIN: Failed to connect to Transmission")
-                TransmissionClass = ""
+
         if clientAgent == 'deluge':
             try:
                 Logger.debug("MAIN: Connecting to %s: http://%s:%s", clientAgent, DelugeHost, DelugePort)
@@ -106,28 +118,21 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
                 delugeClient.connect(host = DelugeHost, port = DelugePort, username = DelugeUSR, password = DelugePWD)
             except:
                 Logger.exception("MAIN: Failed to connect to deluge")
-                delugeClient = ""
 
         # if we are using links with uTorrent it means we need to pause it in order to access the files
         Logger.debug("MAIN: Stoping torrent %s in %s while processing", inputName, clientAgent)
-        if clientAgent == 'utorrent' and utorrentClass != "":            
+        if clientAgent == 'utorrent' and utorrentClass != "":
             utorrentClass.stop(inputHash)
         if clientAgent == 'transmission' and TransmissionClass !="":
             TransmissionClass.stop_torrent(inputID)
         if clientAgent == 'deluge' and delugeClient != "":
             delugeClient.core.pause_torrent([inputID])
-        time.sleep(5)  # Give Torrent client some time to catch up with the change      
+        time.sleep(5)  # Give Torrent client some time to catch up with the change
 
     Logger.debug("MAIN: Scanning files in directory: %s", inputDirectory)
 
-    if inputCategory in hpCategory:
-        noFlatten.extend(hpCategory) # Make sure we preserve folder structure for HeadPhones.
-        if useLink in ['sym','move']: # These don't work for HeadPhones.
-            useLink = 'no' # default to copy.
+    noFlatten.extend(config.get_categories(["HeadPhones"]).values()) # Make sure we preserve folder structure for HeadPhones.
 
-    if inputCategory in sbCategory and sbFork in SICKBEARD_TORRENT: # Don't flatten when sending to SICKBEARD_TORRENT
-        noFlatten.extend(sbCategory)
-      
     outputDestinationMaster = outputDestination # Save the original, so we can change this within the loop below, and reset afterwards.
     now = datetime.datetime.now()
     for dirpath, dirnames, filenames in os.walk(inputDirectory):
@@ -147,7 +152,7 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
             targetDirectory = os.path.join(outputDestination, file)
 
             if root == 1:
-                if foundFile == int(0): 
+                if foundFile == int(0):
                     Logger.debug("MAIN: Looking for %s in: %s", inputName, file)
                 if (safeName(inputName) in safeName(file)) or (safeName(fileName) in safeName(inputName)):
                     #pass  # This file does match the Torrent name
@@ -167,17 +172,8 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
                 else:
                     continue  # This file has not been recently moved or created, skip it
 
-            if inputCategory in sbCategory and sbFork in SICKBEARD_TORRENT: # We want to link every file.
-                Logger.info("MAIN: Found file %s in %s", fileExtension, filePath)
-                try:
-                    copy_link(filePath, targetDirectory, useLink, outputDestination)
-                    copy_list.append([filePath, os.path.join(outputDestination, file)])
-                except:
-                    Logger.exception("MAIN: Failed to link file: %s", file)
-                continue
-
             if fileExtension in mediaContainer:  # If the file is a video file
-                if is_sample(filePath, inputName, minSampleSize, SampleIDs) and not inputCategory in hpCategory:  # Ignore samples
+                if is_sample(filePath, inputName, minSampleSize, SampleIDs) and not inputCategory in config.get_categories(["HeadPhones"]).values():  # Ignore samples
                     Logger.info("MAIN: Ignoring sample file: %s  ", filePath)
                     continue
                 else:
@@ -197,33 +193,23 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
                     Logger.exception("MAIN: Failed to link file: %s", file)
                 continue
             elif fileExtension in compressedContainer:
-                if inputCategory in hpCategory: # We need to link all files for HP in order to move these back to support seeding.
-                    Logger.info("MAIN: Linking compressed archive file %s for file %s", fileExtension, filePath)
-                    try:
-                        copy_link(filePath, targetDirectory, useLink, outputDestination)
-                        copy_list.append([filePath, os.path.join(outputDestination, file)])
-                    except:
-                        Logger.exception("MAIN: Failed to link file: %s", file)
                 # find part numbers in second "extension" from right, if we have more than 1 compressed file in the same directory.
                 if re.search(r'\d+', os.path.splitext(fileName)[1]) and os.path.dirname(filePath) in extracted_folder and not any(item in os.path.splitext(fileName)[1] for item in ['.720p','.1080p','.x264']):
                     part = int(re.search(r'\d+', os.path.splitext(fileName)[1]).group())
                     if part == 1: # we only want to extract the primary part.
-                        Logger.debug("MAIN: Found primary part of a multi-part archive %s. Extracting", file)                       
+                        Logger.debug("MAIN: Found primary part of a multi-part archive %s. Extracting", file)
                     else:
                         Logger.debug("MAIN: Found part %s of a multi-part archive %s. Ignoring", part, file)
                         continue
                 Logger.info("MAIN: Found compressed archive %s for file %s", fileExtension, filePath)
                 try:
-                    if inputCategory in hpCategory: # HP needs to scan the same dir as passed to downloader. 
-                        extractor.extract(filePath, inputDirectory)
-                    else:
-                        extractor.extract(filePath, outputDestination)
+                    extractor.extract(filePath, outputDestination)
                     extractionSuccess = True # we use this variable to determine if we need to pause a torrent or not in uTorrent (don't need to pause archived content)
                     extracted_folder.append(os.path.dirname(filePath))
                 except:
                     Logger.exception("MAIN: Extraction failed for: %s", file)
                 continue
-            elif not inputCategory in cpsCategory + sbCategory: #process all for non-video categories.
+            elif not inputCategory in list(chain.from_iterable(config.get_categories(['CouchPotato','SickBeard']).values())): #process all for non-video categories.
                 Logger.info("MAIN: Found file %s for category %s", filePath, inputCategory)
                 copy_link(filePath, targetDirectory, useLink, outputDestination)
                 copy_list.append([filePath, os.path.join(outputDestination, file)])
@@ -233,11 +219,11 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
                 continue
 
     outputDestination = outputDestinationMaster # Reset here.
-    if not inputCategory in noFlatten: #don't flatten hp in case multi cd albums, and we need to copy this back later. 
+    if not inputCategory in noFlatten: #don't flatten hp in case multi cd albums, and we need to copy this back later.
         flatten(outputDestination)
 
     # Now check if movie files exist in destination:
-    if inputCategory in cpsCategory + sbCategory and not (inputCategory in sbCategory and sbFork in SICKBEARD_TORRENT): 
+    if inputCategory in list(chain.from_iterable(config.get_categories(['CouchPotato','SickBeard']).values())):
         for dirpath, dirnames, filenames in os.walk(outputDestination):
             for file in filenames:
                 filePath = os.path.join(dirpath, file)
@@ -257,61 +243,38 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
         else:
             Logger.debug("MAIN: Found %s media files in output. %s were found in input", str(video2), str(video))
 
-    if inputCategory in sbCategory and sbFork in SICKBEARD_TORRENT:
-        if len(copy_list) > 0:
-            Logger.debug("MAIN: Found and linked %s files", str(len(copy_list)))
-            status = int(0)
-
-    processCategories = cpsCategory + sbCategory + hpCategory + mlCategory + gzCategory
+    processCategories = list(chain.from_iterable(sections.values()))
 
     if (inputCategory in user_script_categories and not "NONE" in user_script_categories) or ("ALL" in user_script_categories and not inputCategory in processCategories):
         Logger.info("MAIN: Processing user script %s.", user_script)
         result = external_script(outputDestination,inputName,inputCategory)
-    elif status == int(0) or (inputCategory in hpCategory + mlCategory + gzCategory): # if movies linked/extracted or for other categories.
+    elif status == int(0) or (inputCategory in list(chain.from_iterable(config.get_categories(['HeadPhones','Mylar','Gamez']).values()))): # if movies linked/extracted or for other categories.
         Logger.debug("MAIN: Calling autoProcess script for successful download.")
         status = int(0) # hp, my, gz don't support failed.
     else:
         Logger.error("MAIN: Something failed! Please check logs. Exiting")
         sys.exit(-1)
 
-    if inputCategory in cpsCategory:
+    result = 0
+    if inputCategory in sections['CouchPotato'].values():
         Logger.info("MAIN: Calling CouchPotatoServer to post-process: %s", inputName)
         download_id = inputHash
-        result = autoProcessMovie.process(outputDestination, inputName, status, clientAgent, download_id, inputCategory)
-    elif inputCategory in sbCategory:
+        result = autoProcessMovie().process(outputDestination, inputName, status, clientAgent, download_id, inputCategory)
+    elif inputCategory in sections['SickBeard'].values():
         Logger.info("MAIN: Calling Sick-Beard to post-process: %s", inputName)
-        result = autoProcessTV.processEpisode(outputDestination, inputName, status, clientAgent, inputCategory)
-    elif inputCategory in hpCategory:
+        result = autoProcessTV().processEpisode(outputDestination, inputName, status, clientAgent, inputCategory)
+    elif inputCategory in sections['HeadPhones'].values():
         Logger.info("MAIN: Calling HeadPhones to post-process: %s", inputName)
-        result = autoProcessMusic.process(inputDirectory, inputName, status, inputCategory)
-    elif inputCategory in mlCategory:
+        result = autoProcessMusic().process(inputDirectory, inputName, status, clientAgent, inputCategory)
+    elif inputCategory in sections['Mylar'].values():
         Logger.info("MAIN: Calling Mylar to post-process: %s", inputName)
-        result = autoProcessComics.processEpisode(outputDestination, inputName, status, inputCategory)
-    elif inputCategory in gzCategory:
+        result = autoProcessComics().processEpisode(outputDestination, inputName, status, clientAgent, inputCategory)
+    elif inputCategory in sections['Gamez'].values():
         Logger.info("MAIN: Calling Gamez to post-process: %s", inputName)
-        result = autoProcessGames.process(outputDestination, inputName, status, inputCategory)
+        result = autoProcessGames().process(outputDestination, inputName, status, clientAgent, inputCategory)
 
     if result == 1:
         Logger.info("MAIN: A problem was reported in the autoProcess* script. If torrent was paused we will resume seeding")
-
-    if inputCategory in hpCategory:
-        # we need to move the output dir files back...
-        Logger.debug("MAIN: Moving temporary HeadPhones files back to allow seeding.")
-        for item in copy_list:
-            if os.path.isfile(os.path.normpath(item[1])): # check to ensure temp files still exist.
-                if os.path.isfile(os.path.normpath(item[0])): # both exist, remove temp version
-                    Logger.debug("MAIN: File %s still present. Removing tempoary file %s", str(item[0]), str(item[1]))
-                    os.unlink(os.path.normpath(item[1]))
-                    continue
-                else: # move temp version back to allow seeding or Torrent removal.
-                    Logger.debug("MAIN: Moving %s to %s", str(item[1]), str(item[0]))
-                    newDestination = os.path.split(os.path.normpath(item[0]))
-                    try:
-                        copy_link(os.path.normpath(item[1]), os.path.normpath(item[0]), 'move', newDestination[0])
-                    except:
-                        Logger.exception("MAIN: Failed to move file: %s", file)
-                    continue
-        shutil.rmtree(outputDestination)
 
     # Hardlink solution for uTorrent, need to implent support for deluge, transmission
     if clientAgent in ['utorrent', 'transmission', 'deluge']  and inputHash:
@@ -334,7 +297,7 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
                 TransmissionClass.start_torrent(inputID)
             if clientAgent == 'deluge' and delugeClient != "":
                 delugeClient.core.resume_torrent([inputID])
-        time.sleep(5)        
+        time.sleep(5)
     #cleanup
     if inputCategory in processCategories and result == 0 and os.path.isdir(outputDestination):
         num_files_new = int(0)
@@ -346,7 +309,7 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
                 if fileExtension in mediaContainer or fileExtension in metaContainer:
                     num_files_new = num_files_new + 1
                     file_list.append(file)
-        if num_files_new == int(0) or forceClean == 1: 
+        if num_files_new == int(0) or forceClean == 1:
             Logger.info("All files have been processed. Cleaning outputDirectory %s", outputDestination)
             shutil.rmtree(outputDestination)
         else:
@@ -415,7 +378,6 @@ def external_script(outputDestination,torrentName,torrentLabel):
     num_files_new = int(0)
     for dirpath, dirnames, filenames in os.walk(outputDestination):
         for file in filenames:
-
             filePath = os.path.join(dirpath, file)
             fileName, fileExtension = os.path.splitext(file)
 
@@ -426,85 +388,69 @@ def external_script(outputDestination,torrentName,torrentLabel):
         Logger.info("All files have been processed. Cleaning outputDirectory %s", outputDestination)
         shutil.rmtree(outputDestination)
     elif user_script_clean == int(1) and num_files_new != int(0):
-        Logger.info("%s files were processed, but %s still remain. outputDirectory will not be cleaned.", num_files, num_files_new)           
+        Logger.info("%s files were processed, but %s still remain. outputDirectory will not be cleaned.", num_files, num_files_new)
     return final_result
 
 if __name__ == "__main__":
+    # run migrate to convert old cfg to new style cfg plus fix any cfg missing values/options.
+    if migratecfg().migrate():
+        nzbtomedia_configure_logging(config.LOG_FILE)
+        Logger = logging.getLogger(__name__)
+        Logger.info("====================")  # Seperate old from new log
+        Logger.info("TorrentToMedia %s", config.NZBTOMEDIA_VERSION)
 
-    #check to migrate old cfg before trying to load.
-    if os.path.isfile(os.path.join(os.path.dirname(sys.argv[0]), "autoProcessMedia.cfg.sample")):
-        migratecfg.migrate()
-    
-    # Logging
-    nzbtomedia_configure_logging(LOG_FILE)
-    Logger = logging.getLogger(__name__)
-
-    Logger.info("====================") # Seperate old from new log
-    Logger.info("TorrentToMedia %s", VERSION)
+        Logger.info("MAIN: Loading config from %s", config.CONFIG_FILE)
+    else:
+        sys.exit(-1)
 
     WakeUp()
 
-    if not config():
-        Logger.error("You need an autoProcessMedia.cfg file - did you rename and edit the .sample?")
-        sys.exit(-1)
+    # EXAMPLE VALUES:
+    clientAgent = config()["Torrent"]["clientAgent"]                                  # utorrent | deluge | transmission | rtorrent | other
+    useLink_in = config()["Torrent"]["useLink"]                                       # no | hard | sym
+    outputDirectory = config()["Torrent"]["outputDirectory"]                          # /abs/path/to/complete/
+    categories = (config()["Torrent"]["categories"])                                  # music,music_videos,pictures,software
+    noFlatten = (config()["Torrent"]["noFlatten"])
 
-    # CONFIG FILE
-    Logger.info("MAIN: Loading config from %s", CONFIG_FILE)
-                                                                                        # EXAMPLE VALUES:
-    clientAgent = config().get("Torrent", "clientAgent")                                  # utorrent | deluge | transmission | rtorrent | other
-    useLink_in = config().get("Torrent", "useLink")                                          # no | hard | sym
-    outputDirectory = config().get("Torrent", "outputDirectory")                          # /abs/path/to/complete/
-    categories = (config().get("Torrent", "categories")).split(',')                       # music,music_videos,pictures,software
-    noFlatten = (config().get("Torrent", "noFlatten")).split(',')
+    uTorrentWEBui = config()["Torrent"]["uTorrentWEBui"]                              # http://localhost:8090/gui/
+    uTorrentUSR = config()["Torrent"]["uTorrentUSR"]                                  # mysecretusr
+    uTorrentPWD = config()["Torrent"]["uTorrentPWD"]                                  # mysecretpwr
 
-    uTorrentWEBui = config().get("Torrent", "uTorrentWEBui")                              # http://localhost:8090/gui/
-    uTorrentUSR = config().get("Torrent", "uTorrentUSR")                                  # mysecretusr
-    uTorrentPWD = config().get("Torrent", "uTorrentPWD")                                  # mysecretpwr
+    TransmissionHost = config()["Torrent"]["TransmissionHost"]                        # localhost
+    TransmissionPort = config()["Torrent"]["TransmissionPort"]                        # 8084
+    TransmissionUSR = config()["Torrent"]["TransmissionUSR"]                          # mysecretusr
+    TransmissionPWD = config()["Torrent"]["TransmissionPWD"]                          # mysecretpwr
 
-    TransmissionHost = config().get("Torrent", "TransmissionHost")                        # localhost
-    TransmissionPort = config().get("Torrent", "TransmissionPort")                        # 8084
-    TransmissionUSR = config().get("Torrent", "TransmissionUSR")                          # mysecretusr
-    TransmissionPWD = config().get("Torrent", "TransmissionPWD")                          # mysecretpwr
+    DelugeHost = config()["Torrent"]["DelugeHost"]                                    # localhost
+    DelugePort = config()["Torrent"]["DelugePort"]                                    # 8084
+    DelugeUSR = config()["Torrent"]["DelugeUSR"]                                      # mysecretusr
+    DelugePWD = config()["Torrent"]["DelugePWD"]                                      # mysecretpwr
 
-    DelugeHost = config().get("Torrent", "DelugeHost")                                    # localhost
-    DelugePort = config().get("Torrent", "DelugePort")                                    # 8084
-    DelugeUSR = config().get("Torrent", "DelugeUSR")                                      # mysecretusr
-    DelugePWD = config().get("Torrent", "DelugePWD")                                      # mysecretpwr
-    
-    deleteOriginal = int(config().get("Torrent", "deleteOriginal"))                       # 0
-    forceClean = int(config().get("Torrent", "forceClean"))                               # 0
-    
-    compressedContainer = (config().get("Extensions", "compressedExtensions")).split(',') # .zip,.rar,.7z
-    mediaContainer = (config().get("Extensions", "mediaExtensions")).split(',')           # .mkv,.avi,.divx
-    metaContainer = (config().get("Extensions", "metaExtensions")).split(',')             # .nfo,.sub,.srt
-    minSampleSize = int(config().get("Extensions", "minSampleSize"))                      # 200 (in MB)
-    SampleIDs = (config().get("Extensions", "SampleIDs")).split(',')                      # sample,-s.
-    
-    cpsCategory = (config().get("CouchPotato", "cpsCategory")).split(',')                 # movie
-    sbCategory = (config().get("SickBeard", "sbCategory")).split(',')                     # tv
-    Torrent_ForceLink = int(config().get("SickBeard", "Torrent_ForceLink"))               # 1
-    hpCategory = (config().get("HeadPhones", "hpCategory")).split(',')                    # music
-    mlCategory = (config().get("Mylar", "mlCategory")).split(',')                         # comics
-    gzCategory = (config().get("Gamez", "gzCategory")).split(',')                         # games
-    categories.extend(cpsCategory)
-    categories.extend(sbCategory)
-    categories.extend(hpCategory)
-    categories.extend(mlCategory)
-    categories.extend(gzCategory)
+    deleteOriginal = int(config()["Torrent"]["deleteOriginal"])                       # 0
+    forceClean = int(config()["Torrent"]["forceClean"])                               # 0
 
-    user_script_categories = config().get("UserScript", "user_script_categories").split(',')         # NONE
-    if not "NONE" in user_script_categories: 
-        user_script_mediaExtensions = (config().get("UserScript", "user_script_mediaExtensions")).split(',')
-        user_script = config().get("UserScript", "user_script_path")
-        user_script_param = (config().get("UserScript", "user_script_param")).split(',')
-        user_script_successCodes = (config().get("UserScript", "user_script_successCodes")).split(',')
-        user_script_clean = int(config().get("UserScript", "user_script_clean"))
-        user_delay = int(config().get("UserScript", "delay"))
-        user_script_runOnce = int(config().get("UserScript", "user_script_runOnce"))
-    
-    transcode = int(config().get("Transcoder", "transcode"))
+    compressedContainer = (config()["Extensions"]["compressedExtensions"]) # .zip,.rar,.7z
+    mediaContainer = (config()["Extensions"]["mediaExtensions"])           # .mkv,.avi,.divx
+    metaContainer = (config()["Extensions"]["metaExtensions"])             # .nfo,.sub,.srt
+    minSampleSize = int(config()["Extensions"]["minSampleSize"])                      # 200 (in MB)
+    SampleIDs = (config()["Extensions"]["SampleIDs"])                      # sample,-s.
 
-    n = 0    
+    sections = config.get_categories(["CouchPotato", "SickBeard", "HeadPhones", "Mylar", "Gamez"])
+    categories += list(chain.from_iterable(sections.values()))
+
+    user_script_categories = config()["UserScript"]["user_script_categories"]         # NONE
+    if not "NONE" in user_script_categories:
+        user_script_mediaExtensions = (config()["UserScript"]["user_script_mediaExtensions"])
+        user_script = config()["UserScript"]["user_script_path"]
+        user_script_param = (config()["UserScript"]["user_script_param"])
+        user_script_successCodes = (config()["UserScript"]["user_script_successCodes"])
+        user_script_clean = int(config()["UserScript"]["user_script_clean"])
+        user_delay = int(config()["UserScript"]["delay"])
+        user_script_runOnce = int(config()["UserScript"]["user_script_runOnce"])
+
+    transcode = int(config()["Transcoder"]["transcode"])
+
+    n = 0
     for arg in sys.argv:
         Logger.debug("arg %s is: %s", n, arg)
         n = n+1
