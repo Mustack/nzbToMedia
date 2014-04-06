@@ -42,18 +42,18 @@ class autoProcessMovie:
 
     def get_movie_info(self, baseURL, imdbid, download_id):
 
-        movie_id = ""
+        movie_id = None
         movie_status = None
-        release_status = None
-        if not imdbid and not download_id:
-            return movie_id, imdbid, download_id, movie_status, release_status
-
-        releaselist = []
         movieid = []
         moviestatus = []
         library = []
         release = []
         offset = int(0)
+        release_status = None
+
+        if not imdbid and not download_id:
+            return movie_id, imdbid, download_id, movie_status, release_status
+
         while True:
             url = baseURL + "media.list/?status=active&release_status=snatched&limit_offset=50," + str(offset)
 
@@ -65,10 +65,7 @@ class autoProcessMovie:
                 Logger.exception("Unable to open URL")
                 break
 
-            movieid2 = []
             library2 = []
-            release2 = []
-            moviestatus2 = []
             try:
                 result = r.json()
                 movieid2 = [item["_id"] for item in result["movies"]]
@@ -87,11 +84,11 @@ class autoProcessMovie:
             moviestatus.extend(moviestatus2)
             library.extend(library2)
             release.extend(release2)
+
             if len(movieid2) < int(50): # finished parsing list of movies. Time to break.
                 break
             offset = offset + 50
 
-        result = None # reset
         for index in range(len(movieid)):
             releaselist1 = [item for item in release[index] if item["status"] == "snatched" and "download_info" in item]
             if download_id:
