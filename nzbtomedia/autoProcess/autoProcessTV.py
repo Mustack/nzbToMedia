@@ -14,18 +14,18 @@ from nzbtomedia.nzbToMediaUtil import convert_to_ascii, is_sample, flatten, getD
 Logger = logging.getLogger()
 
 class autoProcessTV:
-    def processEpisode(self, dirName, nzbName=None, failed=False, clientAgent = "manual", section=None, inputCategory=None):
+    def processEpisode(self, dirName, nzbName=None, failed=False, clientAgent = "manual", inputCategory=None):
         if dirName is None:
             Logger.error("No directory was given!")
             return 1  # failure
 
         # auto-detect correct section
-        section = [x for x in config.issubsection(inputCategory) if int(config()[x][inputCategory]['enabled']) == 1]
-        if len(section) > 1:
+        secCount, section = [x  for x in enumerate(config.issubsection(inputCategory)) if int(config()[x[1]][inputCategory]['enabled']) == 1][0]
+        if secCount > 1:
             Logger.error(
                 "MAIN: You can't have multiple sub-sections with the same name enabled, fix your autoProcessMedia.cfg file.")
             return 1
-        elif len(section) == 0:
+        elif secCount == 0:
             Logger.error(
                 "MAIN: We were unable to find a processor for category %s that was enabled, please check your autoProcessMedia.cfg file.", inputCategory)
             return 1
@@ -139,27 +139,27 @@ class autoProcessTV:
         socket.setdefaulttimeout(int(TIME_OUT)) #initialize socket timeout.
 
         # configure SB params to pass
-        params['quiet'] = 1
+        fork_params['quiet'] = 1
         if nzbName is not None:
-            params['nzbName'] = nzbName
+            fork_params['nzbName'] = nzbName
 
-        for param in copy.copy(params):
+        for param in copy.copy(fork_params):
             if param == "failed":
-                params[param] = failed
+                fork_params[param] = failed
 
             if param in ["dirName", "dir"]:
-                params[param] = dirName
+                fork_params[param] = dirName
 
             if param == "process_method":
                 if fork in config.SICKBEARD_TORRENT and Torrent_NoLink == 1 and not clientAgent in ['nzbget','sabnzbd']: #use default SickBeard settings here.
-                    del params[param]
+                    del fork_params[param]
                 if process_method:
-                    params[param] = process_method
+                    fork_params[param] = process_method
                 else:
-                    del params[param]
+                    del fork_params[param]
 
         # delete any unused params so we don't pass them to SB by mistake
-        [params.pop(k) for k,v in params.items() if v is None]
+        [fork_params.pop(k) for k,v in fork_params.items() if v is None]
 
         if status == 0:
             Logger.info("The download succeeded. Sending process request to SickBeard's %s branch", fork)
@@ -184,7 +184,7 @@ class autoProcessTV:
         else:
             protocol = "http://"
 
-        url = protocol + host + ":" + port + web_root + "/home/postprocess/processEpisode?" + urllib.urlencode(params)
+        url = protocol + host + ":" + port + web_root + "/home/postprocess/processEpisode?" + urllib.urlencode(fork_params)
 
         if clientAgent == "manual":delay = 0
         Logger.info("Waiting for %s seconds to allow SB to process newly extracted files", str(delay))

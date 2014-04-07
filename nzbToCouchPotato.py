@@ -238,14 +238,16 @@ else:
     Logger.warn("MAIN: Invalid number of arguments received from client.")
     for section, subsection in subsections.items():
         for category in subsection:
-            dirNames = get_dirnames(section, category)
-            for dirName in dirNames:
-                Logger.info("MAIN: nzbToCouchPotato running %s:%s as a manual run...", section, subsection)
-                results = autoProcessMovie(dirName, inputName=os.path.basename(dirName), status=0, clientAgent="manual",
-                                           inputCategory=category)
-                if results != 0:
-                    result = results
-                    Logger.info("MAIN: A problem was reported when trying to manually run %s:%s.", section, subsection)
+            if int(config()[section][category]['enabled']) == 1:
+                dirNames = get_dirnames(section, category)
+                for dirName in dirNames:
+                    Logger.info("MAIN: nzbToCouchPotato running %s:%s as a manual run...", section, subsection)
+                    results = autoProcessMovie().process(dirName, os.path.basename(dirName), 0, inputCategory=category)
+                    if results != 0:
+                        result = results
+                        Logger.info("MAIN: A problem was reported when trying to manually run %s:%s.", section, subsection)
+            else:
+                Logger.info("MAIN: nzbTo%s %s:%s is DISABLED, you can enable this in autoProcessMedia.cfg ...", section, section, category)
 
 if result == 0:
     Logger.info("MAIN: The autoProcessMovie script completed successfully.")
