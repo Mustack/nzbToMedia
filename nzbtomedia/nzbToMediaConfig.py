@@ -1,10 +1,11 @@
-import logging
 import os
 import shutil
-from lib import configobj
+import lib.configobj
+from lib.configobj import ConfigObj
 from itertools import chain
 
-class config(object):
+original_ConfigObj = lib.configobj.ConfigObj
+class config(original_ConfigObj):
     # constants for nzbtomedia
     NZBTOMEDIA_VERSION = 'V9.3'
     NZBTOMEDIA_TIMEOUT = 60
@@ -40,38 +41,32 @@ class config(object):
     LOG_CONFIG = os.path.join(PROGRAM_DIR, "logging.cfg")
     SAMPLE_LOG_CONFIG = os.path.join(PROGRAM_DIR, "logging.cfg.sample")
 
-    def __new__(cls, *config_file):
-        try:
-            # load config
-            if not config_file:
-                return configobj.ConfigObj(cls.CONFIG_FILE, interpolation=False)
-            else:
-                return configobj.ConfigObj(*config_file, interpolation=False)
-        except Exception, e:
-            return
+    def __init__(self, *args, **kw):
+        if len(args) == 0:
+            args = (self.CONFIG_FILE,)
+        super(lib.configobj.ConfigObj, self).__init__(*args, **kw)
+        self.interpolation = False
 
-    @staticmethod
-    def issubsection(inputCategory, sections=None, checkenabled=False):
+    def issubsection(self, inputCategory, sections=None, checkenabled=False):
         # checks if the inputCategory belongs to the section
         # or returns sections with subsections matching the inputCategoryu
         if not sections:
-            sections = config.get_sections(inputCategory)
+            sections = self.get_sections(inputCategory)
 
         if not isinstance(sections, list):
             sections = [sections]
 
-        results = set()
+        results = []
         for section in sections:
-            if config()[section].has_key(inputCategory):
+            if self[section].has_key(inputCategory):
                 if checkenabled:
-                    if config.isenabled(section, inputCategory):
-                        results.add(section)
+                    if self.isenabled(section, inputCategory):
+                        results.append(section)
                 else:
-                    results.add(section)
-        return results if results.issubset(sections) else False
+                    results.append(section)
+        return results if list(set(results).intersection(set(sections))) else []
 
-    @staticmethod
-    def get_sections(subsections):
+    def get_sections(self, subsections):
         # finds all sections belonging to the subsection and returns them
         if not isinstance(subsections, list):
             subsections = [subsections]
@@ -79,51 +74,48 @@ class config(object):
         to_return = []
         for subsection in subsections:
             for section in config().sections:
-                if config()[section].has_key(subsection):
+                if self[section].has_key(subsection):
                     to_return.append(section)
         return to_return
 
-    @staticmethod
-    def get_subsections(sections):
+    def get_subsections(self, sections):
         # finds all subsections belonging to the section and returns them
         if not isinstance(sections, list):
             sections = [sections]
 
         to_return = {}
         for section in sections:
-            if section in config().sections:
-                for subsection in config()[section].sections:
+            if section in self.sections:
+                for subsection in self[section].sections:
                     if not isinstance(subsection, list):
                         subsection = [subsection]
                     to_return.update({section: subsection})
         return to_return
 
-    @staticmethod
-    def isenabled(section, inputCategory):
+
+    def isenabled(self, section, inputCategory):
         # checks if the subsection is enabled/disabled
-        if int(config()[section][inputCategory]['enabled']) == 1:
+        if int(self[section][inputCategory]['enabled']) == 1:
             return True
 
-    @staticmethod
-    def search(key, section, subsection=None):
+    def search(self, key, section, subsection=None):
         # searches for data in sections and subsections and returns it
         if subsection:
-            if key in config()[section][subsection].keys():
-                return config()[section][subsection][key]
+            if key in self[section][subsection].keys():
+                return self[section][subsection][key]
         else:
-            if key in config()[section].keys():
-                return config()[section][key]
+            if key in self[section].keys():
+                return self[section][key]
 
-    @staticmethod
-    def migrate():
+    def migrate(self):
         global config_new, config_old
         config_new = config_old = None
 
         try:
             # check for autoProcessMedia.cfg and create if it does not exist
-            if not config(config.CONFIG_FILE):
+            if not config():
                 shutil.copyfile(config.SAMPLE_CONFIG_FILE, config.CONFIG_FILE)
-            config_old = config(config.CONFIG_FILE)
+            config_old = config()
         except:
             pass
 
@@ -242,8 +234,7 @@ class config(object):
 
         return True
 
-    @staticmethod
-    def addnzbget():
+    def addnzbget(self):
         config_new = config()
         section = "CouchPotato"
         envCatKey = 'NZBPO_CPSCATEGORY'
@@ -355,3 +346,5 @@ class config(object):
         # writing our configuration file to 'autoProcessMedia.cfg'
         with open(config.CONFIG_FILE, 'wb') as configFile:
             config_new.write(configFile)
+
+lib.configobj.ConfigObj = config
