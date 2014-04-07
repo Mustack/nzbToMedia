@@ -1,4 +1,5 @@
 import copy
+import json
 import logging
 import os
 import socket
@@ -20,12 +21,8 @@ class autoProcessTV:
             return 1  # failure
 
         # auto-detect correct section
-        secCount, section = [x  for x in enumerate(config.issubsection(inputCategory)) if int(config()[x[1]][inputCategory]['enabled']) == 1][0]
-        if secCount > 1:
-            Logger.error(
-                "MAIN: You can't have multiple sub-sections with the same name enabled, fix your autoProcessMedia.cfg file.")
-            return 1
-        elif secCount == 0:
+        section = config.issubsection(inputCategory, checkenabled=True)
+        if len(section) == 0:
             Logger.error(
                 "MAIN: We were unable to find a processor for category %s that was enabled, please check your autoProcessMedia.cfg file.", inputCategory)
             return 1
@@ -46,6 +43,11 @@ class autoProcessTV:
         port = config()[section][inputCategory]["port"]
         username = config()[section][inputCategory]["username"]
         password = config()[section][inputCategory]["password"]
+
+        try:
+            apikey = config()[section][inputCategory]["apikey"]
+        except:
+            apikey = ""
 
         try:
             ssl = int(config()[section][inputCategory]["ssl"])
@@ -162,7 +164,7 @@ class autoProcessTV:
         [fork_params.pop(k) for k,v in fork_params.items() if v is None]
 
         if status == 0:
-            Logger.info("The download succeeded. Sending process request to SickBeard's %s branch", fork)
+            Logger.info("The download succeeded. Sending process request to %s", section)
         elif fork in config.SICKBEARD_FAILED:
             Logger.info("The download failed. Sending 'failed' process request to SickBeard's %s branch", fork)
         else:
@@ -184,17 +186,27 @@ class autoProcessTV:
         else:
             protocol = "http://"
 
-        url = protocol + host + ":" + port + web_root + "/home/postprocess/processEpisode?" + urllib.urlencode(fork_params)
+
+        url = None
+        if section == "SickBeard":
+            url = protocol + host + ":" + port + web_root + "/home/postprocess/processEpisode?" + urllib.urlencode(fork_params)
+        elif section == "NzbDrone":
+            url = protocol + host + ":" + port + web_root + "/api/command"
 
         if clientAgent == "manual":delay = 0
-        Logger.info("Waiting for %s seconds to allow SB to process newly extracted files", str(delay))
+        Logger.info("Waiting for %s seconds to allow %s to process newly extracted files", str(delay), section)
 
         time.sleep(delay)
 
         Logger.debug("Opening URL: %s", url)
 
         try:
-            r = requests.get(url, auth=(username, password), stream=True)
+            if section == "SickBeard":
+                r = requests.get(url, auth=(username, password), stream=True)
+            elif section == "NzbDrone":
+                data = json.dumps({"name": "DownloadedEpisodesScan", "path": dirName})
+                headers = {"X-Api-Key": apikey}
+                r = requests.get(url, data=data, headers=headers, stream=True)
         except requests.ConnectionError:
             Logger.exception("Unable to open URL")
             return 1 # failure
