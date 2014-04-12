@@ -1,41 +1,42 @@
-import logging
 import urllib
-
+import nzbtomedia
 from lib import requests
-
-from nzbToMediaConfig import config
-
-def autoFork(section, inputCategory):
-
-    Logger = logging.getLogger()
+from nzbtomedia import logger
+def autoFork(inputCategory):
+    # auto-detect correct section
+    section = nzbtomedia.CFG.findsection(inputCategory)
+    if not section:
+        logger.error(
+            "We were unable to find a section for category %s, please check your autoProcessMedia.cfg file.", inputCategory)
+        return 1
 
     # config settings
     try:
-        host = config()[section][inputCategory]["host"]
-        port = config()[section][inputCategory]["port"]
+        host = nzbtomedia.CFG[section][inputCategory]["host"]
+        port = nzbtomedia.CFG[section][inputCategory]["port"]
     except:
         host = None
         port = None
 
     try:
-        username = config()[section][inputCategory]["username"]
-        password = config()[section][inputCategory]["password"]
+        username = nzbtomedia.CFG[section][inputCategory]["username"]
+        password = nzbtomedia.CFG[section][inputCategory]["password"]
     except:
         username = None
         password = None
 
     try:
-        ssl = int(config()[section][inputCategory]["ssl"])
-    except (config, ValueError):
+        ssl = int(nzbtomedia.CFG[section][inputCategory]["ssl"])
+    except:
         ssl = 0
 
     try:
-        web_root = config()[section][inputCategory]["web_root"]
-    except config:
+        web_root = nzbtomedia.CFG[section][inputCategory]["web_root"]
+    except:
         web_root = ""
 
     try:
-        fork = config.FORKS.items()[config.FORKS.keys().index(config()[section][inputCategory]["fork"])]
+        fork = nzbtomedia.FORKS.items()[nzbtomedia.FORKS.keys().index(nzbtomedia.CFG[section][inputCategory]["fork"])]
     except:
         fork = "auto"
 
@@ -46,8 +47,8 @@ def autoFork(section, inputCategory):
 
     detected = False
     if fork == "auto":
-        Logger.info("Attempting to auto-detect " + section + " fork")
-        for fork in sorted(config.FORKS.iteritems()):
+        logger.info("Attempting to auto-detect " + section + " fork")
+        for fork in sorted(nzbtomedia.FORKS.iteritems()):
             url = protocol + host + ":" + port + web_root + "/home/postprocess/processEpisode?" + urllib.urlencode(fork[1])
 
             # attempting to auto-detect fork
@@ -57,7 +58,7 @@ def autoFork(section, inputCategory):
                 else:
                     r = requests.get(url)
             except requests.ConnectionError:
-                Logger.info("Could not connect to " + section + ":" + inputCategory + " to perform auto-fork detection!")
+                logger.info("Could not connect to " + section + ":" + inputCategory + " to perform auto-fork detection!")
                 break
 
             if r.ok:
@@ -65,10 +66,10 @@ def autoFork(section, inputCategory):
                 break
 
         if detected:
-            Logger.info("" + section + ":" + inputCategory + " fork auto-detection successful ...")
+            logger.info("" + section + ":" + inputCategory + " fork auto-detection successful ...")
         else:
-            Logger.info("" + section + ":" + inputCategory + " fork auto-detection failed")
-            fork = config.FORKS.items()[config.FORKS.keys().index(config.FORK_DEFAULT)]
+            logger.info("" + section + ":" + inputCategory + " fork auto-detection failed")
+            fork = nzbtomedia.FORKS.items()[nzbtomedia.FORKS.keys().index(nzbtomedia.FORK_DEFAULT)]
 
-    Logger.info("" + section + ":" + inputCategory + " fork set to %s", fork[0])
+    logger.info("" + section + ":" + inputCategory + " fork set to %s", fork[0])
     return fork[0], fork[1]

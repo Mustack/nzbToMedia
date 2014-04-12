@@ -1,18 +1,15 @@
 import os
 import re
 import socket
+import stat
 import struct
 import shutil
 import sys
 import time
-import logging
-import logging.config
-import logging.handlers
+import nzbtomedia
 
 from nzbtomedia.linktastic import linktastic
-from nzbtomedia.nzbToMediaConfig import config
-
-Logger = logging.getLogger()
+from nzbtomedia import logger
 
 def getDirectorySize(directory):
     dir_size = 0
@@ -28,174 +25,89 @@ def safeName(name):
     safename = re.sub(r"[\/\\\:\*\?\"\<\>\|]", "", name) #make this name safe for use in directories for windows etc.
     return safename
 
-
-def nzbtomedia_configure_logging(logfile=None):
-    if not logfile:
-        logfile = config.LOG_FILE
-
-    logging.config.fileConfig(config.LOG_CONFIG)
-    fileHandler = logging.handlers.RotatingFileHandler(logfile, mode='a', maxBytes=1048576, backupCount=1, encoding='utf-8', delay=True)
-    fileHandler.formatter = logging.Formatter('%(asctime)s|%(levelname)-7.7s %(message)s', '%H:%M:%S')
-    fileHandler.level = logging.DEBUG
-    logging.getLogger().addHandler(fileHandler)
-
-
 def create_destination(outputDestination):
     if os.path.exists(outputDestination):
         return
     try:
-        Logger.info("CREATE DESTINATION: Creating destination folder: %s", outputDestination)
+        logger.info("CREATE DESTINATION: Creating destination folder: %s", outputDestination)
         os.makedirs(outputDestination)
     except:
-        Logger.exception("CREATE DESTINATION: Not possible to create destination folder. Exiting")
+        logger.error("CREATE DESTINATION: Not possible to create destination folder. Exiting")
         sys.exit(-1)
 
-def category_search(inputDirectory, inputName, inputCategory, root, categories):
-    if inputDirectory is None:
-        return inputDirectory, inputName, inputCategory, root
+def makeDir(path):
+    if not os.path.isdir(path):
+        try:
+            os.makedirs( path)
+        except OSError:
+            return False
+    return True
 
-    if not os.path.isdir(inputDirectory) and os.path.isfile(inputDirectory): # If the input directory is a file, assume single file downlaod and split dir/name.
-        inputDirectory,inputName = os.path.split(os.path.normpath(inputDirectory))
+def category_search(inputDirectory, inputName, inputCategory, root, categories):
+    single = False
+    tordir = False
+
+    if inputDirectory is None:  # =Nothing to process here.
+        return inputDirectory, inputName, inputCategory, root, single
+
+    pathlist = os.path.normpath(inputDirectory).split(os.sep)
+
+    try:
+        inputCategory = list(set(pathlist) & set(categories))[-1]  # assume last match is most relevant category.
+        logger.debug("SEARCH: Found Category: %s in directory structure", inputCategory)
+    except IndexError:
+        inputCategory = ""
+        logger.debug("SEARCH: Could not find a category in the directory structure")
+
+    if not os.path.isdir(inputDirectory) and os.path.isfile(inputDirectory):  # If the input directory is a file
+        single = True
+        if not inputName: inputName = os.path.split(os.path.normpath(inputDirectory))[1]
+        return inputDirectory, inputName, inputCategory, root, single
 
     if inputCategory and os.path.isdir(os.path.join(inputDirectory, inputCategory)):
-        Logger.info("SEARCH: Found category directory %s in input directory directory %s", inputCategory, inputDirectory)
+        logger.info("SEARCH: Found category directory %s in input directory directory %s", inputCategory, inputDirectory)
         inputDirectory = os.path.join(inputDirectory, inputCategory)
-        Logger.info("SEARCH: Setting inputDirectory to %s", inputDirectory)
+        logger.info("SEARCH: Setting inputDirectory to %s", inputDirectory)
     if inputName and os.path.isdir(os.path.join(inputDirectory, inputName)):
-        Logger.info("SEARCH: Found torrent directory %s in input directory directory %s", inputName, inputDirectory)
+        logger.info("SEARCH: Found torrent directory %s in input directory directory %s", inputName, inputDirectory)
         inputDirectory = os.path.join(inputDirectory, inputName)
-        Logger.info("SEARCH: Setting inputDirectory to %s", inputDirectory)
+        logger.info("SEARCH: Setting inputDirectory to %s", inputDirectory)
+        tordir = True
     if inputName and os.path.isdir(os.path.join(inputDirectory, safeName(inputName))):
-        Logger.info("SEARCH: Found torrent directory %s in input directory directory %s", safeName(inputName), inputDirectory)
+        logger.info("SEARCH: Found torrent directory %s in input directory directory %s", safeName(inputName), inputDirectory)
         inputDirectory = os.path.join(inputDirectory, safeName(inputName))
-        Logger.info("SEARCH: Setting inputDirectory to %s", inputDirectory)
-    
-    categorySearch = [os.path.normpath(inputDirectory), ""]  # initializie
-    notfound = 0
-    unique = int(0)
-    for x in range(10):  # loop up through 10 directories looking for category.
+        logger.info("SEARCH: Setting inputDirectory to %s", inputDirectory)
+        tordir = True
+
+    imdbid = [item for item in pathlist if '.cp(tt' in item]  # This looks for the .cp(tt imdb id in the path.
+    if imdbid and not '.cp(tt' in inputName:
+        inputName = imdbid[0]  # This ensures the imdb id is preserved and passed to CP
+        tordir = True
+
+    if inputCategory and not tordir:
         try:
-            categorySearch2 = os.path.split(os.path.normpath(categorySearch[0]))
-        except:  # this might happen when we can't go higher.
-            if unique == int(0):
-                if inputCategory and inputName:  # if these exists, we are ok to proceed, but assume we are in a root/common directory.
-                    Logger.info("SEARCH: Could not find a category in the directory structure")
-                    Logger.info("SEARCH: We will try and determine which files to process, individually")
-                    root = 1
-                    break  # we are done
-                elif inputCategory:  # if this exists, we are ok to proceed, but assume we are in a root/common directory and we have to check file dates.
-                    Logger.info("SEARCH: Could not find a torrent name or category in the directory structure")
-                    Logger.info("SEARCH: We will try and determine which files to process, individually")
-                    root = 2
-                    break  # we are done
-                elif inputName:  # we didn't find category after 10 loops. This is a problem.
-                    Logger.info("SEARCH: Could not find a category in the directory structure")
-                    Logger.info("SEARCH: Files will be linked and will only be processed by the userscript if enabled for UNCAT or ALL")
-                    root = 1
-                    break  # we are done
-                else:  # we didn't find this after 10 loops. This is a problem.
-                    Logger.info("SEARCH: Could not identify category or torrent name from the directory structure.")
-                    Logger.info("SEARCH: Files will be linked and will only be processed by the userscript if enabled for UNCAT or ALL")
-                    root = 2
-                    break  # we are done
+            index = pathlist.index(inputCategory)
+            if index + 1 < len(pathlist):
+                tordir = True
+                logger.info("SEARCH: Found a unique directory %s in the category directory", pathlist[index+1])
+                if not inputName: inputName = pathlist[index+1]
+        except ValueError:
+            pass
 
-        if categorySearch2[1] in categories:
-            Logger.debug("SEARCH: Found Category: %s in directory structure", categorySearch2[1])
-            if not inputCategory:
-                Logger.info("SEARCH: Determined Category to be: %s", categorySearch2[1])
-                inputCategory = categorySearch2[1]
-            if inputName and categorySearch[0] != os.path.normpath(inputDirectory):  # if we are not in the root directory and we have inputName we can continue.
-                if ('.cp(tt' in categorySearch[1]) and (not '.cp(tt' in inputName):  # if the directory was created by CouchPotato, and this tag is not in Torrent name, we want to add it.
-                    Logger.info("SEARCH: Changing Torrent Name to %s to preserve imdb id.", categorySearch[1])
-                    inputName = categorySearch[1]
-                    Logger.info("SEARCH: Identified Category: %s and Torrent Name: %s. We are in a unique directory, so we can proceed.", inputCategory, inputName)
-                break  # we are done
-            elif categorySearch[1] and not inputName:  # assume the the next directory deep is the torrent name.
-                inputName = categorySearch[1]
-                Logger.info("SEARCH: Found torrent name: %s", categorySearch[1])
-                if os.path.isdir(os.path.join(categorySearch[0], categorySearch[1])):
-                    Logger.info("SEARCH: Found torrent directory %s in category directory %s", os.path.join(categorySearch[0], categorySearch[1]), categorySearch[0])
-                    inputDirectory = os.path.normpath(os.path.join(categorySearch[0], categorySearch[1]))
-                elif os.path.isfile(os.path.join(categorySearch[0], categorySearch[1])): # Our inputdirectory is actually the full file path for single file download.
-                    Logger.info("SEARCH: %s is a file, not a directory.", os.path.join(categorySearch[0], categorySearch[1]))
-                    Logger.info("SEARCH: Setting input directory to %s", categorySearch[0])
-                    root = 1
-                    inputDirectory = os.path.normpath(categorySearch[0])
-                else: # The inputdirectory given can't have been valid. Start at the category directory and search for date modified.
-                    Logger.info("SEARCH: Input Directory %s doesn't exist as a directory or file", inputDirectory)
-                    Logger.info("SEARCH: Setting input directory to %s and checking for files by date modified.", categorySearch[0])
-                    root = 2
-                    inputDirectory = os.path.normpath(categorySearch[0])
-                break  # we are done
-            elif ('.cp(tt' in categorySearch[1]) and (not '.cp(tt' in inputName):  # if the directory was created by CouchPotato, and this tag is not in Torrent name, we want to add it.
-                Logger.info("SEARCH: Changing Torrent Name to %s to preserve imdb id.", categorySearch[1])
-                inputName = categorySearch[1]
-                break  # we are done
-            elif inputName and os.path.isdir(os.path.join(categorySearch[0], inputName)):  # testing for torrent name in first sub directory
-                Logger.info("SEARCH: Found torrent directory %s in category directory %s", os.path.join(categorySearch[0], inputName), categorySearch[0])
-                if categorySearch[0] == os.path.normpath(inputDirectory):  # only true on first pass, x =0
-                    inputDirectory = os.path.join(categorySearch[0], inputName)  # we only want to search this next dir up.
-                break  # we are done
-            elif inputName and os.path.isdir(os.path.join(categorySearch[0], safeName(inputName))):  # testing for torrent name in first sub directory
-                Logger.info("SEARCH: Found torrent directory %s in category directory %s", os.path.join(categorySearch[0], safeName(inputName)), categorySearch[0])
-                if categorySearch[0] == os.path.normpath(inputDirectory):  # only true on first pass, x =0
-                    inputDirectory = os.path.join(categorySearch[0], safeName(inputName))  # we only want to search this next dir up.
-                break  # we are done
-            elif inputName and os.path.isfile(os.path.join(categorySearch[0], inputName)) or os.path.isfile(os.path.join(categorySearch[0], safeName(inputName))):  # testing for torrent name name as file inside category directory
-                Logger.info("SEARCH: Found torrent file %s in category directory %s", os.path.join(categorySearch[0], safeName(inputName)), categorySearch[0])
-                root = 1
-                inputDirectory = os.path.normpath(categorySearch[0])
-                break  # we are done
-            elif inputName:  # if these exists, we are ok to proceed, but we are in a root/common directory.
-                Logger.info("SEARCH: Could not find a unique torrent folder in the directory structure")
-                Logger.info("SEARCH: The directory passed is the root directory for category %s", categorySearch2[1])
-                Logger.warn("SEARCH: You should change settings to download torrents to their own directory if possible")
-                Logger.info("SEARCH: We will try and determine which files to process, individually")
-                root = 1
-                break  # we are done
-            else:  # this is a problem! if we don't have Torrent name and are in the root category dir, we can't proceed.
-                Logger.warn("SEARCH: Could not identify a torrent name and the directory passed is common to all downloads for category %s.", categorySearch[1])
-                Logger.warn("SEARCH: You should change settings to download torrents to their own directory if possible")
-                Logger.info("SEARCH: We will try and determine which files to process, individually")
-                root = 2
-                break
-        elif inputName and safeName(categorySearch2[1]) == safeName(inputName) and os.path.isdir(categorySearch[0]):  # we have identified a unique directory.
-            Logger.info("SEARCH: Files appear to be in their own directory")
-            unique = int(1)
-            if inputCategory:  # we are ok to proceed.
-                break  # we are done
-            else:
-                Logger.debug("SEARCH: Continuing scan to determin category.")
-                categorySearch = categorySearch2  # ready for next loop
-                continue  # keep going
+    if inputName and not tordir:
+        if inputName in pathlist or safeName(inputName) in pathlist:
+            logger.info("SEARCH: Found torrent directory %s in the directory structure", inputName)
+            tordir = True
         else:
-            if x == 9:  # This is the last pass in the loop and we didn't find anything.
-                notfound = 1
-                break    # we are done
-            else:
-                categorySearch = categorySearch2  # ready for next loop
-                continue   # keep going
-
-    if notfound == 1 and not unique == int(1):
-        if inputCategory and inputName:  # if these exists, we are ok to proceed, but assume we are in a root/common directory.
-            Logger.info("SEARCH: Could not find a category in the directory structure")
-            Logger.info("SEARCH: We will try and determine which files to process, individually")
             root = 1
-        elif inputCategory:  # if this exists, we are ok to proceed, but assume we are in a root/common directory and we have to check file dates.
-            Logger.info("SEARCH: Could not find a torrent name or category in the directory structure")
-            Logger.info("SEARCH: We will try and determine which files to process, individually")
-            root = 2
-        elif inputName:  # we didn't find category after 10 loops. This is a problem.
-            Logger.info("SEARCH: Could not find a category in the directory structure")
-            Logger.info("SEARCH: Files will be linked and will only be processed by the userscript if enabled for UNCAT or ALL")
-            root = 1
-        else:  # we didn't find this after 10 loops. This is a problem.
-            Logger.info("SEARCH: Could not identify category or torrent name from the directory structure.")
-            Logger.info("SEARCH: Files will be linked and will only be processed by the userscript if enabled for UNCAT or ALL")
-            root = 2
+    if not tordir:
+        root = 2
 
-    return inputDirectory, inputName, inputCategory, root
+    if root > 0:
+        logger.info("SEARCH: Could not find a unique directory for this download. Assume a common directory.")
+        logger.info("SEARCH: We will try and determine which files to process, individually")
 
+    return inputDirectory, inputName, inputCategory, root, single
 
 def is_sample(filePath, inputName, minSampleSize, SampleIDs):
     # 200 MB in bytes
@@ -213,47 +125,47 @@ def is_sample(filePath, inputName, minSampleSize, SampleIDs):
 
 def copy_link(filePath, targetDirectory, useLink, outputDestination):
     if os.path.isfile(targetDirectory):
-        Logger.info("COPYLINK: target file already exists. Nothing to be done")
+        logger.info("COPYLINK: target file already exists. Nothing to be done")
         return True
 
     create_destination(outputDestination)
     if useLink == "hard":
         try:
-            Logger.info("COPYLINK: Hard linking %s to %s", filePath, targetDirectory)
+            logger.info("COPYLINK: Hard linking %s to %s", filePath, targetDirectory)
             linktastic.link(filePath, targetDirectory)
         except:
-            Logger.exception("COPYLINK")
+            logger.error("COPYLINK")
             if os.path.isfile(targetDirectory):
-                Logger.warn("COPYLINK: Something went wrong in linktastic.link, but the destination file was created")
+                logger.warning("COPYLINK: Something went wrong in linktastic.link, but the destination file was created")
             else:
-                Logger.warn("COPYLINK: Something went wrong in linktastic.link, copying instead")
-                Logger.debug("COPYLINK: Copying %s to %s", filePath, targetDirectory)
+                logger.warning("COPYLINK: Something went wrong in linktastic.link, copying instead")
+                logger.debug("COPYLINK: Copying %s to %s", filePath, targetDirectory)
                 shutil.copy(filePath, targetDirectory)
     elif useLink == "sym":
         try:
-            Logger.info("COPYLINK: Moving %s to %s before sym linking", filePath, targetDirectory)
+            logger.info("COPYLINK: Moving %s to %s before sym linking", filePath, targetDirectory)
             shutil.move(filePath, targetDirectory)
-            Logger.info("COPYLINK: Sym linking %s to %s", targetDirectory, filePath)
+            logger.info("COPYLINK: Sym linking %s to %s", targetDirectory, filePath)
             linktastic.symlink(targetDirectory, filePath)
         except:
-            Logger.exception("COPYLINK")
+            logger.error("COPYLINK")
             if os.path.isfile(targetDirectory):
-                Logger.warn("COPYLINK: Something went wrong in linktastic.link, but the destination file was created")
+                logger.warning("COPYLINK: Something went wrong in linktastic.link, but the destination file was created")
             else:
-                Logger.info("COPYLINK: Something went wrong in linktastic.link, copying instead")
-                Logger.debug("COPYLINK: Copying %s to %s", filePath, targetDirectory)
+                logger.info("COPYLINK: Something went wrong in linktastic.link, copying instead")
+                logger.debug("COPYLINK: Copying %s to %s", filePath, targetDirectory)
                 shutil.copy(filePath, targetDirectory)
     elif useLink == "move":
-        Logger.debug("Moving %s to %s", filePath, targetDirectory)
+        logger.debug("Moving %s to %s", filePath, targetDirectory)
         shutil.move(filePath, targetDirectory)
     else:
-        Logger.debug("Copying %s to %s", filePath, targetDirectory)
+        logger.debug("Copying %s to %s", filePath, targetDirectory)
         shutil.copy(filePath, targetDirectory)
     return True
 
 
 def flatten(outputDestination):
-    Logger.info("FLATTEN: Flattening directory: %s", outputDestination)
+    logger.info("FLATTEN: Flattening directory: %s", outputDestination)
     for dirpath, dirnames, filenames in os.walk(outputDestination):  # Flatten out the directory to make postprocessing easier
         if dirpath == outputDestination:
             continue  # No need to try and move files in the root destination directory
@@ -263,12 +175,12 @@ def flatten(outputDestination):
             try:
                 shutil.move(source, target)
             except:
-                Logger.exception("FLATTEN: Could not flatten %s", source)
+                logger.error("FLATTEN: Could not flatten %s", source)
     removeEmptyFolders(outputDestination)  # Cleanup empty directories
 
 
 def removeEmptyFolders(path):
-    Logger.info("REMOVER: Removing empty folders in: %s", path)
+    logger.info("REMOVER: Removing empty folders in: %s", path)
     if not os.path.isdir(path):
         return
 
@@ -283,15 +195,23 @@ def removeEmptyFolders(path):
     # If folder empty, delete it
     files = os.listdir(path)
     if len(files) == 0:
-        Logger.debug("REMOVER: Removing empty folder: %s", path)
+        logger.debug("REMOVER: Removing empty folder: %s", path)
         os.rmdir(path)
+
+def remove_read_only(path):
+    if not os.path.isdir(path):
+        return
+    for dirpath, dirnames, filenames in os.walk(path):
+        for filename in filenames:
+            logger.debug("Removing Read Only Flag for: %s", filename)
+            os.chmod(os.path.join(dirpath, filename), stat.S_IWRITE)
 
 def iterate_media_files(dirname):
     mediaContainer = [ '.mkv', '.avi', '.divx', '.xvid', '.mov', '.wmv',
         '.mp4', '.mpg', '.mpeg', '.iso' ]
 
-    for dirpath, dirnames, filesnames in os.walk(dirname):
-        for filename in filesnames:
+    for dirpath, dirnames, filenames in os.walk(dirname):
+        for filename in filenames:
             fileExtension = os.path.splitext(filename)[1]
             if not (fileExtension in mediaContainer):
                 continue
@@ -329,49 +249,49 @@ def TestCon(host, port):
         return "Down"
 
 def WakeUp():
-    if not config():
-        Logger.error("You need an autoProcessMedia.cfg file - did you rename and edit the .sample?")
+    if not nzbtomedia.CFG:
+        logger.error("You need an autoProcessMedia.cfg file - did you rename and edit the .sample?")
         return
 
-    wake = int(config()["WakeOnLan"]["wake"])
+    wake = int(nzbtomedia.CFG["WakeOnLan"]["wake"])
     if wake == 0: # just return if we don't need to wake anything.
         return
-    Logger.info("Loading WakeOnLan config from %s", config.CONFIG_FILE)
-    host = config()["WakeOnLan"]["host"]
-    port = int(config()["WakeOnLan"]["port"])
-    mac = config()["WakeOnLan"]["mac"]
+    logger.info(("Loading WakeOnLan config from %s", nzbtomedia.CONFIG_FILE))
+    host = nzbtomedia.CFG["WakeOnLan"]["host"]
+    port = int(nzbtomedia.CFG["WakeOnLan"]["port"])
+    mac = nzbtomedia.CFG["WakeOnLan"]["mac"]
 
     i=1
     while TestCon(host, port) == "Down" and i < 4:
-        Logger.info("Sending WakeOnLan Magic Packet for mac: %s", mac)
+        logger.info(("Sending WakeOnLan Magic Packet for mac: %s", mac))
         WakeOnLan(mac)
         time.sleep(20)
         i=i+1
 
     if TestCon(host,port) == "Down": # final check.
-        Logger.warning("System with mac: %s has not woken after 3 attempts. Continuing with the rest of the script.", mac)
+        logger.warning("System with mac: %s has not woken after 3 attempts. Continuing with the rest of the script.", mac)
     else:
-        Logger.info("System with mac: %s has been woken. Continuing with the rest of the script.", mac)
+        logger.info("System with mac: %s has been woken. Continuing with the rest of the script.", mac)
 
 def convert_to_ascii(nzbName, dirName):
-    if not config():
-        Logger.error("You need an autoProcessMedia.cfg file - did you rename and edit the .sample?")
+    if not nzbtomedia.CFG:
+        logger.error("You need an autoProcessMedia.cfg file - did you rename and edit the .sample?")
         return nzbName, dirName
 
-    ascii_convert = int(config()["ASCII"]["convert"])
+    ascii_convert = int(nzbtomedia.CFG["ASCII"]["convert"])
     if ascii_convert == 0 or os.name == 'nt': # just return if we don't want to convert or on windows os and "\" is replaced!.
         return nzbName, dirName
     
     nzbName2 = str(nzbName.decode('ascii', 'replace').replace(u'\ufffd', '_'))
     dirName2 = str(dirName.decode('ascii', 'replace').replace(u'\ufffd', '_'))
     if dirName != dirName2:
-        Logger.info("Renaming directory:%s  to: %s.", dirName, dirName2)
+        logger.info("Renaming directory:%s  to: %s.", dirName, dirName2)
         shutil.move(dirName, dirName2)
     for dirpath, dirnames, filesnames in os.walk(dirName2):
         for filename in filesnames:
             filename2 = str(filename.decode('ascii', 'replace').replace(u'\ufffd', '_'))
             if filename != filename2:
-                Logger.info("Renaming file:%s  to: %s.", filename, filename2)
+                logger.info("Renaming file:%s  to: %s.", filename, filename2)
                 shutil.move(filename, filename2)
     nzbName = nzbName2
     dirName = dirName2
@@ -461,21 +381,21 @@ def get_dirnames(section, subsections=None):
     dirNames = []
 
     if subsections is None:
-        subsections = config.get_subsections(section).values()
+        subsections = nzbtomedia.SUBSECTIONS[section].sections
 
     if not isinstance(subsections, list):
         subsections = [subsections]
 
     for subsection in subsections:
         try:
-            watch_dir = config()[section][subsection]["watch_dir"]
+            watch_dir = nzbtomedia.CFG[section][subsection]["watch_dir"]
             if not os.path.exists(watch_dir):
                 watch_dir = None
         except:
             watch_dir = None
 
         try:
-            outputDirectory = os.path.join(config()["Torrent"]["outputDirectory"], subsection)
+            outputDirectory = os.path.join(nzbtomedia.CFG["Torrent"]["outputDirectory"], subsection)
             if not os.path.exists(outputDirectory):
                 outputDirectory = None
         except:
@@ -485,22 +405,22 @@ def get_dirnames(section, subsections=None):
             dirNames.extend([os.path.join(watch_dir, o) for o in os.listdir(watch_dir) if
                         os.path.isdir(os.path.join(watch_dir, o))])
             if not dirNames:
-                Logger.warn("%s:%s has no directories identified to scan inside %s", section, subsection, watch_dir)
+                logger.warning("%s:%s has no directories identified to scan inside %s", section, subsection, watch_dir)
 
         if outputDirectory:
             dirNames.extend([os.path.join(outputDirectory, o) for o in os.listdir(outputDirectory) if
                         os.path.isdir(os.path.join(outputDirectory, o))])
             if not dirNames:
-                Logger.warn("%s:%s has no directories identified to scan inside %s", section, subsection, outputDirectory)
+                logger.warning("%s:%s has no directories identified to scan inside %s", section, subsection, outputDirectory)
 
         if watch_dir is None and outputDirectory is None:
-            Logger.warn("%s:%s has no watch_dir or outputDirectory setup to be Scanned, go fix you autoProcessMedia.cfg file.", section, subsection)
+            logger.warning("%s:%s has no watch_dir or outputDirectory setup to be Scanned, go fix you autoProcessMedia.cfg file.", section, subsection)
 
     return dirNames
 
 def delete(dirName):
-    Logger.info("Deleting failed files and folder %s", dirName)
+    logger.info("Deleting failed files and folder %s", dirName)
     try:
         shutil.rmtree(dirName, True)
     except:
-        Logger.exception("Unable to delete folder %s", dirName)
+        logger.error("Unable to delete folder %s", dirName)
