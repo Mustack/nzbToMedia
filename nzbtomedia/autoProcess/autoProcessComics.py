@@ -18,7 +18,9 @@ class autoProcessComics:
                 "We were unable to find a section for category %s, please check your autoProcessMedia.cfg file.", inputCategory)
             return 1
 
-        logger.postprocess("Loading config from %s", nzbtomedia.CONFIG_FILE)
+        logger.postprocess("#########################################################")
+        logger.postprocess("## ..::[%s]::.. :: CATEGORY:[%s]", section, inputCategory)
+        logger.postprocess("#########################################################")
 
         host = nzbtomedia.CFG[section][inputCategory]["host"]
         port = nzbtomedia.CFG[section][inputCategory]["port"]
