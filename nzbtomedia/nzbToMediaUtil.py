@@ -10,6 +10,10 @@ import nzbtomedia
 
 from nzbtomedia.linktastic import linktastic
 from nzbtomedia import logger
+from nzbtomedia.synchronousdeluge.client import DelugeClient
+from nzbtomedia.utorrent.client import UTorrentClient
+from nzbtomedia.transmissionrpc.client import Client as TransmissionClient
+
 
 def getDirectorySize(directory):
     dir_size = 0
@@ -38,7 +42,7 @@ def create_destination(outputDestination):
 def makeDir(path):
     if not os.path.isdir(path):
         try:
-            os.makedirs( path)
+            os.makedirs(path)
         except OSError:
             return False
     return True
@@ -346,11 +350,11 @@ def parse_utorrent(args):
 
 def parse_deluge(args):
     # Deluge usage: call TorrentToMedia.py TORRENT_ID TORRENT_NAME TORRENT_DIR
-    inputDirectory = os.path.normpath(sys.argv[3])
-    inputName = sys.argv[2]
+    inputDirectory = os.path.normpath(args[3])
+    inputName = args[2]
     inputCategory = ''  # We dont have a category yet
-    inputHash = sys.argv[1]
-    inputID = sys.argv[1]
+    inputHash = args[1]
+    inputID = args[1]
     return inputDirectory, inputName, inputCategory, inputHash, inputID
 
 
@@ -363,7 +367,7 @@ def parse_transmission(args):
     inputID = os.getenv('TR_TORRENT_ID')
     return inputDirectory, inputName, inputCategory, inputHash, inputID
 
-def parse_args(clientAgent):
+def parse_args(clientAgent, args):
     clients = {
     'other': parse_other,
     'rtorrent': parse_rtorrent,
@@ -373,7 +377,7 @@ def parse_args(clientAgent):
     }
 
     try:
-        return clients[clientAgent](sys.argv)
+        return clients[clientAgent](args)
     except:return None, None, None, None, None
 
 def get_dirnames(section, subsections=None):
@@ -404,19 +408,15 @@ def get_dirnames(section, subsections=None):
         if watch_dir:
             dirNames.extend([os.path.join(watch_dir, o) for o in os.listdir(watch_dir) if
                         os.path.isdir(os.path.join(watch_dir, o))])
-            if not dirNames:
-                logger.warning("%s:%s has no directories identified to scan inside %s", section, subsection, watch_dir)
 
         if outputDirectory:
             dirNames.extend([os.path.join(outputDirectory, o) for o in os.listdir(outputDirectory) if
                         os.path.isdir(os.path.join(outputDirectory, o))])
-            if not dirNames:
-                logger.warning("%s:%s has no directories identified to scan inside %s", section, subsection, outputDirectory)
 
-        if watch_dir is None and outputDirectory is None:
-            logger.warning("%s:%s has no watch_dir or outputDirectory setup to be Scanned, go fix you autoProcessMedia.cfg file.", section, subsection)
+        if not dirNames:
+            logger.warning("%s:%s has no directories identified for post-processing", section, subsection)
 
-    return dirNames
+    return list(set(dirNames))
 
 def delete(dirName):
     logger.info("Deleting failed files and folder %s", dirName)
@@ -424,3 +424,53 @@ def delete(dirName):
         shutil.rmtree(dirName, True)
     except:
         logger.error("Unable to delete folder %s", dirName)
+
+def cleanup_directories(inputCategory, processCategories, result, directory):
+    if inputCategory in processCategories and result == 0 and os.path.isdir(directory):
+        num_files_new = int(0)
+        file_list = []
+        for dirpath, dirnames, filenames in os.walk(directory):
+            for file in filenames:
+                filePath = os.path.join(dirpath, file)
+                fileName, fileExtension = os.path.splitext(file)
+                if fileExtension in nzbtomedia.MEDIACONTAINER or fileExtension in nzbtomedia.METACONTAINER:
+                    num_files_new += 1
+                    file_list.append(file)
+        if num_files_new is 0 or int(nzbtomedia.CFG["General"]["force_clean"]) == 1:
+            logger.info("All files have been processed. Cleaning directory %s", directory)
+            shutil.rmtree(directory)
+        else:
+            logger.info("Directory %s still contains %s media and/or meta files. This directory will not be removed.", directory, num_files_new)
+            for item in file_list:
+                logger.debug("media/meta file found: %s", item)
+
+def create_torrent_class(clientAgent):
+    # Hardlink solution for Torrents
+    TorrentClass = ""
+    if clientAgent in ['utorrent', 'transmission', 'deluge']:
+        if clientAgent == 'utorrent':
+            try:
+                logger.debug("Connecting to %s: %s", clientAgent, nzbtomedia.UTORRENTWEBUI)
+                TorrentClass = UTorrentClient(nzbtomedia.UTORRENTWEBUI, nzbtomedia.UTORRENTUSR, nzbtomedia.UTORRENTPWD)
+            except:
+                logger.error("Failed to connect to uTorrent")
+
+        if clientAgent == 'transmission':
+            try:
+                logger.debug("Connecting to %s: http://%s:%s", clientAgent, nzbtomedia.TRANSMISSIONHOST,
+                             nzbtomedia.TRANSMISSIONPORT)
+                TorrentClass = TransmissionClient(nzbtomedia.TRANSMISSIONHOST, nzbtomedia.TRANSMISSIONPORT, nzbtomedia.TRANSMISSIONUSR,
+                                                  nzbtomedia.TRANSMISSIONPWD)
+            except:
+                logger.error("Failed to connect to Transmission")
+
+        if clientAgent == 'deluge':
+            try:
+                logger.debug("Connecting to %s: http://%s:%s", clientAgent, nzbtomedia.DELUGEHOST,
+                             nzbtomedia.DELUGEPORT)
+                TorrentClass = DelugeClient()
+                TorrentClass.connect(host =nzbtomedia.DELUGEHOST, port =nzbtomedia.DELUGEPORT, username =nzbtomedia.DELUGEUSR, password =nzbtomedia.DELUGEPWD)
+            except:
+                logger.error("Failed to connect to deluge")
+
+    return TorrentClass

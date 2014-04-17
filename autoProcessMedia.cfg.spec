@@ -2,9 +2,12 @@
 # For more information, visit https://github.com/clinton-hall/nzbToMedia/wiki
 
 [General]
+    version_notify = 1
+    auto_update = 0
     git_path =
     git_user =
     git_branch =
+    force_clean = 0
 
 [CouchPotato]
     #### autoProcessing for Movies
@@ -18,12 +21,11 @@
         ssl = 0
         web_root =
         delay = 65
-        TimePerGiB = 60
         method = renamer
         delete_failed = 0
         wait_for = 2
-        #### Set to 1 if CouchPotatoServer is running on a different server to your NZB client
-        remoteCPS = 0
+        #### # Set to path where completed downloads go on the remote CouchPotatoServer
+        remote_path =
         watch_dir =
 
 [SickBeard]
@@ -39,7 +41,6 @@
         web_root =
         ssl = 0
         delay = 0
-        TimePerGiB = 60
         watch_dir =
         fork = auto
         delete_failed = 0
@@ -61,7 +62,6 @@
         web_root =
         ssl = 0
         delay = 0
-        TimePerGiB = 60
         watch_dir =
         delete_failed = 0
         nzbExtractionBy = Downloader
@@ -79,7 +79,6 @@
         ssl = 0
         web_root =
         delay = 65
-        TimePerGiB = 60
         watch_dir =
 
 [Mylar]
@@ -136,7 +135,6 @@
     DelugePWD = your password
     ###### ADVANCED USE - ONLY EDIT IF YOU KNOW WHAT YOU'RE DOING ######
     deleteOriginal = 0
-    forceClean = 0
 
 [Extensions]
     compressedExtensions = .zip,.rar,.7z,.gz,.bz,.tar,.arj,.1,.01,.001
@@ -181,8 +179,8 @@
     user_script_categories = NONE
     #What extension do you want to process? Specify all the extension, or use "ALL" to process all files.
     user_script_mediaExtensions = .mkv,.avi,.divx,.xvid,.mov,.wmv,.mp4,.mpg,.mpeg
-    #Specify the path of the script
-    user_script_path = /media/test/script/script.sh
+    #Specify the path to your custom script
+    user_script_path = /nzbToMedia/userscripts/script.sh
     #Specify the argument(s) passed to script, comma separated in order.
     #for example FP,FN,DN, TN, TL for file path (absolute file name with path), file name, absolute directory name (with path), Torrent Name, Torrent Label/Category.
     #So the result is /media/test/script/script.sh FP FN DN TN TL. Add other arguments as needed eg -f, -r

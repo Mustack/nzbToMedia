@@ -62,9 +62,9 @@ class CheckVersion():
         force: if true the VERSION_NOTIFY setting will be ignored and a check will be forced
         """
 
-#        if not nzbtomedia.VERSION_NOTIFY and not force:
-#            logger.log(u"Version checking is disabled, not checking for the newest version")
-#            return False
+        if not nzbtomedia.VERSION_NOTIFY and not force:
+            logger.log(u"Version checking is disabled, not checking for the newest version")
+            return False
 
         logger.log(u"Checking if " + self.install_type + " needs an update")
         if not self.updater.need_update():
@@ -79,26 +79,15 @@ class CheckVersion():
         if self.updater.need_update():
             return self.updater.update()
 
-    def find_installed_version(self):
-        if self.updater._find_installed_version():
-            nzbtomedia.NZBTOMEDIA_VERSION = self.updater._cur_commit_hash
-            nzbtomedia.NZBTOMEDIA_BRANCH = self.updater.branch
-
 class UpdateManager():
     def get_github_repo_user(self):
-        repo_user = 'clinton-hall'
-        if nzbtomedia.CFG['General']['git_user']:
-            repo_user =  nzbtomedia.CFG['General']['git_user']
-        return repo_user
+        return nzbtomedia.GIT_USER
 
     def get_github_repo(self):
-        return 'nzbToMedia'
+        return nzbtomedia.GIT_REPO
 
     def get_github_branch(self):
-        git_branch = 'master'
-        if nzbtomedia.CFG['General']['git_branch']:
-            git_branch =  nzbtomedia.CFG['General']['git_branch']
-        return git_branch
+        return nzbtomedia.GIT_BRANCH
 
 class GitUpdateManager(UpdateManager):
     def __init__(self):
@@ -113,8 +102,7 @@ class GitUpdateManager(UpdateManager):
         self._num_commits_ahead = 0
 
     def _git_error(self):
-        error_message = 'Unable to find your git executable - Set git_path in your autoProcessMedia.cfg OR delete your .git folder and run from source to enable updates.'
-        nzbtomedia.NEWEST_VERSION_STRING = error_message
+        logger.debug('Unable to find your git executable - Set git_path in your autoProcessMedia.cfg OR delete your .git folder and run from source to enable updates.')
 
     def _find_working_git(self):
         test_cmd = 'version'
@@ -159,8 +147,7 @@ class GitUpdateManager(UpdateManager):
                     logger.log(u"Not using: " + cur_git, logger.DEBUG)
 
         # Still haven't found a working git
-        error_message = 'Unable to find your git executable - Set git_path in your autoProcessMedia.cfg OR delete your .git folder and run from source to enable updates.'
-        nzbtomedia.NEWEST_VERSION_STRING = error_message
+        logger.debug('Unable to find your git executable - Set git_path in your autoProcessMedia.cfg OR delete your .git folder and run from source to enable updates.')
 
         return None
 
@@ -169,7 +156,7 @@ class GitUpdateManager(UpdateManager):
         output = err = exit_status = None
 
         if not git_path:
-            logger.log(u"No git specified, can't use git commands", logger.ERROR)
+            logger.log(u"No git specified, can't use git commands", logger.DEBUG)
             exit_status = 1
             return (output, err, exit_status)
 
@@ -195,15 +182,15 @@ class GitUpdateManager(UpdateManager):
             exit_status = 0
 
         elif exit_status == 1:
-            logger.log(cmd + u" returned : " + output, logger.ERROR)
+            logger.log(cmd + u" returned : " + output, logger.DEBUG)
             exit_status = 1
 
         elif exit_status == 128 or 'fatal:' in output or err:
-            logger.log(cmd + u" returned : " + output, logger.ERROR)
+            logger.log(cmd + u" returned : " + output, logger.DEBUG)
             exit_status = 128
 
         else:
-            logger.log(cmd + u" returned : " + output + u", treat as error for now", logger.ERROR)
+            logger.log(cmd + u" returned : " + output + u", treat as error for now", logger.DEBUG)
             exit_status = 1
 
         return (output, err, exit_status)
@@ -225,6 +212,8 @@ class GitUpdateManager(UpdateManager):
                 logger.log(u"Output doesn't look like a hash, not using it", logger.ERROR)
                 return False
             self._cur_commit_hash = cur_commit_hash
+            if self._cur_commit_hash:
+                nzbtomedia.NZBTOMEDIA_VERSION = self._cur_commit_hash
             return True
         else:
             return False
@@ -235,8 +224,8 @@ class GitUpdateManager(UpdateManager):
         if exit_status == 0 and branch_info:
             branch = branch_info.strip().replace('refs/heads/', '', 1)
             if branch:
-                nzbtomedia.NZBTOMEDIA_VERSION = branch
-        return nzbtomedia.NZBTOMEDIA_VERSION
+                nzbtomedia.NZBTOMEDIA_BRANCH = branch
+        return nzbtomedia.NZBTOMEDIA_BRANCH
 
     def _check_github_for_update(self):
         """
@@ -302,7 +291,9 @@ class GitUpdateManager(UpdateManager):
             return
 
     def need_update(self):
-        self._find_installed_version()
+        if not self._find_installed_version():
+            logger.error("Unable to determine installed version via git, please check your logs!")
+            return False
 
         if not self._cur_commit_hash:
             return True
@@ -358,6 +349,8 @@ class SourceUpdateManager(UpdateManager):
 
         if not self._cur_commit_hash:
             self._cur_commit_hash = None
+        else:
+            nzbtomedia.NZBTOMEDIA_VERSION = self._cur_commit_hash
 
     def need_update(self):
 

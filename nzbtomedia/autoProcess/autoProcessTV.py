@@ -1,15 +1,15 @@
 import copy
 import json
 import os
-import socket
 import urllib
 import time
+import sys
 import nzbtomedia
 from lib import requests
 from nzbtomedia.Transcoder import Transcoder
 from nzbtomedia.nzbToMediaAutoFork import autoFork
 from nzbtomedia.nzbToMediaSceneExceptions import process_all_exceptions
-from nzbtomedia.nzbToMediaUtil import convert_to_ascii, is_sample, flatten, getDirectorySize, delete
+from nzbtomedia.nzbToMediaUtil import convert_to_ascii, is_sample, flatten, delete
 from nzbtomedia import logger
 
 class autoProcessTV:
@@ -43,7 +43,6 @@ class autoProcessTV:
             apikey = nzbtomedia.CFG[section][inputCategory]["apikey"]
         except:
             apikey = ""
-
         try:
             ssl = int(nzbtomedia.CFG[section][inputCategory]["ssl"])
         except:
@@ -53,10 +52,6 @@ class autoProcessTV:
         except:
             web_root = ""
         try:
-            watch_dir = nzbtomedia.CFG[section][inputCategory]["watch_dir"]
-        except:
-            watch_dir = ""
-        try:
             transcode = int(nzbtomedia.CFG["Transcoder"]["transcode"])
         except:
             transcode = 0
@@ -64,14 +59,6 @@ class autoProcessTV:
             delete_failed = int(nzbtomedia.CFG[section][inputCategory]["delete_failed"])
         except:
             delete_failed = 0
-        try:
-            delay = float(nzbtomedia.CFG[section][inputCategory]["delay"])
-        except:
-            delay = 0
-        try:
-            TimePerGiB = int(nzbtomedia.CFG[section][inputCategory]["TimePerGiB"])
-        except:
-            TimePerGiB = 60 # note, if using Network to transfer on 100Mbit LAN, expect ~ 600 MB/minute.
         try:
             SampleIDs = (nzbtomedia.CFG["Extensions"]["SampleIDs"])
         except:
@@ -88,10 +75,6 @@ class autoProcessTV:
             Torrent_NoLink = int(nzbtomedia.CFG[section][inputCategory]["Torrent_NoLink"])
         except:
             Torrent_NoLink = 0
-
-
-        mediaContainer = (nzbtomedia.CFG["Extensions"]["mediaExtensions"])
-        minSampleSize = int(nzbtomedia.CFG["Extensions"]["minSampleSize"])
 
         if not os.path.isdir(dirName) and os.path.isfile(dirName): # If the input directory is a file, assume single file download and split dir/name.
             dirName = os.path.split(os.path.normpath(dirName))[0]
@@ -114,8 +97,8 @@ class autoProcessTV:
                 for file in filenames:
                     filePath = os.path.join(dirpath, file)
                     fileExtension = os.path.splitext(file)[1]
-                    if fileExtension in mediaContainer:  # If the file is a video file
-                        if is_sample(filePath, nzbName, minSampleSize, SampleIDs):
+                    if fileExtension in nzbtomedia.MEDIACONTAINER:  # If the file is a video file
+                        if is_sample(filePath, nzbName, nzbtomedia.MINSAMPLESIZE, SampleIDs):
                             logger.debug("Removing sample file: %s", filePath)
                             os.unlink(filePath)  # remove samples
                         else:
@@ -129,11 +112,6 @@ class autoProcessTV:
                 logger.warning("No media files found in directory %s. Processing this as a failed download", dirName)
                 status = int(1)
                 failed = True
-
-        dirSize = getDirectorySize(dirName) # get total directory size to calculate needed processing time.
-        TIME_OUT = int(TimePerGiB) * dirSize # SickBeard needs to complete all moving and renaming before returning the log sequence via url.
-        TIME_OUT += 60 # Add an extra minute for over-head/processing/metadata.
-        socket.setdefaulttimeout(int(TIME_OUT)) #initialize socket timeout.
 
         # configure SB params to pass
         fork_params['quiet'] = 1
@@ -184,25 +162,20 @@ class autoProcessTV:
 
         url = None
         if section == "SickBeard":
-            url = protocol + host + ":" + port + web_root + "/home/postprocess/processEpisode?" + urllib.urlencode(fork_params)
+            url = protocol + host + ":" + port + web_root + "/home/postprocess/processEpisode"
         elif section == "NzbDrone":
             url = protocol + host + ":" + port + web_root + "/api/command"
-
-        if clientAgent == "manual":delay = 0
-        logger.postprocess("Waiting for %s seconds to allow %s to process newly extracted files", str(delay), section)
-
-        time.sleep(delay)
 
         logger.debug("Opening URL: %s", url)
 
         try:
             r = None
             if section == "SickBeard":
-                r = requests.get(url, auth=(username, password), stream=True)
+                r = requests.get(url, auth=(username, password), params=fork_params, stream=True)
             elif section == "NzbDrone":
-                data = json.dumps({"name": "DownloadedEpisodesScan", "path": dirName})
+                params = {"name": "DownloadedEpisodesScan", "path": dirName}
                 headers = {"X-Api-Key": apikey}
-                r = requests.get(url, data=data, headers=headers, stream=True)
+                r = requests.get(url, params=params, headers=headers, stream=True)
         except requests.ConnectionError:
             logger.error("Unable to open URL")
             return 1 # failure
@@ -210,6 +183,7 @@ class autoProcessTV:
         for line in r.iter_lines():
             if line: logger.postprocess("%s", line)
 
-        if status != 0 and delete_failed and not dirName in ['sys.argv[0]','/','']:
+        if status != 0 and delete_failed and not os.path.dirname(dirName) == dirName:
+            logger.postprocess("Deleting failed files and folder %s", dirName)
             delete(dirName)
         return 0 # Success

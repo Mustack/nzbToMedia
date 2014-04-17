@@ -6,6 +6,7 @@ import re
 import shutil
 import sys
 import nzbtomedia
+import platform
 
 from subprocess import Popen
 from nzbtomedia.autoProcess.autoProcessComics import autoProcessComics
@@ -15,14 +16,10 @@ from nzbtomedia.autoProcess.autoProcessMusic import autoProcessMusic
 from nzbtomedia.autoProcess.autoProcessTV import autoProcessTV
 from nzbtomedia.extractor import extractor
 from nzbtomedia.nzbToMediaUtil import category_search, safeName, is_sample, copy_link, parse_args, flatten, get_dirnames, \
-    remove_read_only
-from nzbtomedia.synchronousdeluge.client import DelugeClient
-from nzbtomedia.utorrent.client import UTorrentClient
-from nzbtomedia.transmissionrpc.client import Client as TransmissionClient
+    remove_read_only, cleanup_directories, create_torrent_class
 from nzbtomedia import logger
 
-def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
-
+def processTorrent(inputDirectory, inputName, inputCategory, inputHash, inputID, clientAgent):
     status = int(1)  # 1 = failed | 0 = success
     root = int(0)
     video = int(0)
@@ -37,8 +34,10 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
 
     logger.debug("Determined Directory: %s | Name: %s | Category: %s", inputDirectory, inputName, inputCategory)
 
-    TorrentClass = create_torrent_class(nzbtomedia.CLIENTAGENT, inputHash)
-    pause_torrent(nzbtomedia.CLIENTAGENT, TorrentClass, inputHash, inputID, inputName)
+    TorrentClass = None
+    if clientAgent != 'manual':
+        TorrentClass = create_torrent_class(clientAgent)
+        pause_torrent(clientAgent, TorrentClass, inputHash, inputID, inputName)
 
     processCategories = nzbtomedia.CFG[nzbtomedia.SECTIONS].sections
 
@@ -51,13 +50,15 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
         Torrent_NoLink = int(nzbtomedia.CFG["SickBeard"][inputCategory]["Torrent_NoLink"])  # 0
         if Torrent_NoLink == 1:
             logger.postprocess("Calling autoProcessTV to post-process: %s",inputName)
-            result = autoProcessTV().processEpisode(inputDirectory, inputName, 0, clientAgent=nzbtomedia.CLIENTAGENT, inputCategory=inputCategory)
+            result = autoProcessTV().processEpisode(inputDirectory, inputName, 0, clientAgent=clientAgent, inputCategory=inputCategory)
             if result != 0:
                 logger.error("A problem was reported in the autoProcessTV script.")
-            resume_torrent(nzbtomedia.CLIENTAGENT, TorrentClass, inputHash, inputID, result, inputName)
-            cleanup_output(inputCategory, processCategories, result, outputDestination)
-            logger.postprocess("All done.")
-            sys.exit()
+
+            if clientAgent != 'manual':
+                resume_torrent(clientAgent, TorrentClass, inputHash, inputID, result, inputName)
+
+            cleanup_directories(inputCategory, processCategories, result, outputDestination)
+            return result
 
     processOnly = nzbtomedia.CFG[nzbtomedia.SECTIONS].sections
     if not "NONE" in nzbtomedia.USER_SCRIPT_CATEGORIES: # if None, we only process the 5 listed.
@@ -67,8 +68,7 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
 
     if not inputCategory in processOnly:
         logger.postprocess("No processing to be done for category: %s. Exiting", inputCategory)
-        logger.postprocess("All done.")
-        sys.exit()
+        return
 
     logger.debug("Scanning files in directory: %s", inputDirectory)
 
@@ -124,7 +124,7 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
                 continue
 
             if fileExtension in nzbtomedia.COMPRESSEDCONTAINER:
-                if (nzbtomedia.CFG["SickBeard"][inputCategory] and nzbtomedia.CFG["SickBeard"][inputCategory]["nzbExtractionBy"] == "Destination"):
+                if not (nzbtomedia.CFG["SickBeard"][inputCategory] and nzbtomedia.CFG["SickBeard"][inputCategory]["nzbExtractionBy"] == "Destination"):
                     # find part numbers in second "extension" from right, if we have more than 1 compressed file in the same directory.
                     if re.search(r'\d+', os.path.splitext(fileName)[1]) and os.path.dirname(filePath) in extracted_folder and not any(item in os.path.splitext(fileName)[1] for item in ['.720p','.1080p','.x264']):
                         part = int(re.search(r'\d+', os.path.splitext(fileName)[1]).group())
@@ -152,7 +152,7 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
     if not inputCategory in nzbtomedia.NOFLATTEN: #don't flatten hp in case multi cd albums, and we need to copy this back later.
         flatten(outputDestination)
 
-    if os.name == 'nt':  # remove Read Only flag from files in Windows.
+    if platform.system().lower() == 'windows':  # remove Read Only flag from files in Windows.
         remove_read_only(outputDestination)
 
     # Now check if video files exist in destination:
@@ -176,73 +176,44 @@ def main(inputDirectory, inputName, inputCategory, inputHash, inputID):
             logger.warning("Found no media files in output.")
 
     if (inputCategory in nzbtomedia.USER_SCRIPT_CATEGORIES and not "NONE" in nzbtomedia.USER_SCRIPT_CATEGORIES) or ("ALL" in nzbtomedia.USER_SCRIPT_CATEGORIES and not inputCategory in processCategories):
-        logger.postprocess("Processing user script %s.", user_script)
+        logger.postprocess("Processing user script %s.", nzbtomedia.USER_SCRIPT)
         result = external_script(outputDestination,inputName,inputCategory)
     elif status == int(0) or (nzbtomedia.CFG['HeadPhones','Mylar','Gamez'][inputCategory]): # if movies linked/extracted or for other categories.
         logger.debug("Calling autoProcess script for successful download.")
         status = int(0) # hp, my, gz don't support failed.
     else:
         logger.error("Something failed! Please check logs. Exiting")
-        sys.exit(-1)
+        return status
 
     result = 0
     if nzbtomedia.CFG['CouchPotato'][inputCategory]:
         logger.postprocess("Calling CouchPotato:" + inputCategory + " to post-process: %s", inputName)
         download_id = inputHash
-        result = autoProcessMovie().process(outputDestination, inputName, status, nzbtomedia.CLIENTAGENT, download_id, inputCategory)
+        result = autoProcessMovie().process(outputDestination, inputName, status, clientAgent, download_id, inputCategory)
     elif nzbtomedia.CFG['SickBeard'][inputCategory]:
         logger.postprocess("Calling Sick-Beard:" + inputCategory + " to post-process: %s", inputName)
-        result = autoProcessTV().processEpisode(outputDestination, inputName, status, nzbtomedia.CLIENTAGENT, inputCategory)
+        result = autoProcessTV().processEpisode(outputDestination, inputName, status, clientAgent, inputCategory)
     elif nzbtomedia.CFG['NzbDrone'][inputCategory]:
         logger.postprocess("Calling NzbDrone:" + inputCategory + " to post-process: %s", inputName)
-        result = autoProcessTV().processEpisode(outputDestination, inputName, status, nzbtomedia.CLIENTAGENT, inputCategory)
+        result = autoProcessTV().processEpisode(outputDestination, inputName, status, clientAgent, inputCategory)
     elif nzbtomedia.CFG['HeadPhones'][inputCategory]:
         logger.postprocess("Calling HeadPhones:" + inputCategory + " to post-process: %s", inputName)
-        result = autoProcessMusic().process(inputDirectory, inputName, status, nzbtomedia.CLIENTAGENT, inputCategory)
+        result = autoProcessMusic().process(outputDestination, inputName, status, clientAgent, inputCategory)
     elif nzbtomedia.CFG['Mylar'][inputCategory]:
         logger.postprocess("Calling Mylar:" + inputCategory + " to post-process: %s", inputName)
-        result = autoProcessComics().processEpisode(outputDestination, inputName, status, nzbtomedia.CLIENTAGENT, inputCategory)
+        result = autoProcessComics().processEpisode(outputDestination, inputName, status, clientAgent, inputCategory)
     elif nzbtomedia.CFG['Gamez'][inputCategory]:
         logger.postprocess("Calling Gamez:" + inputCategory + " to post-process: %s", inputName)
-        result = autoProcessGames().process(outputDestination, inputName, status, nzbtomedia.CLIENTAGENT, inputCategory)
+        result = autoProcessGames().process(outputDestination, inputName, status, clientAgent, inputCategory)
 
-    if result == 1:
+    if result == 1 and clientAgent != 'manual':
         logger.error("A problem was reported in the autoProcess* script. If torrent was paused we will resume seeding")
 
-    resume_torrent(nzbtomedia.CLIENTAGENT, TorrentClass, inputHash, inputID, result, inputName)
-    cleanup_output(inputCategory, processCategories, result, outputDestination)
-    logger.postprocess("All done.")
+    if clientAgent != 'manual':
+        resume_torrent(clientAgent, TorrentClass, inputHash, inputID, result, inputName)
 
-def create_torrent_class(clientAgent, inputHash):
-    # Hardlink solution for Torrents
-    TorrentClass = ""
-    if clientAgent in ['utorrent', 'transmission', 'deluge'] and inputHash:
-        if clientAgent == 'utorrent':
-            try:
-                logger.debug("Connecting to %s: %s", clientAgent, nzbtomedia.UTORRENTWEBUI)
-                TorrentClass = UTorrentClient(nzbtomedia.UTORRENTWEBUI, nzbtomedia.UTORRENTUSR, nzbtomedia.UTORRENTPWD)
-            except:
-                logger.error("Failed to connect to uTorrent")
-
-        if clientAgent == 'transmission':
-            try:
-                logger.debug("Connecting to %s: http://%s:%s", clientAgent, nzbtomedia.TRANSMISSIONHOST,
-                             nzbtomedia.TRANSMISSIONPORT)
-                TorrentClass = TransmissionClient(nzbtomedia.TRANSMISSIONHOST, nzbtomedia.TRANSMISSIONPORT, nzbtomedia.TRANSMISSIONUSR,
-                                                  nzbtomedia.TRANSMISSIONPWD)
-            except:
-                logger.error("Failed to connect to Transmission")
-
-        if clientAgent == 'deluge':
-            try:
-                logger.debug("Connecting to %s: http://%s:%s", clientAgent, nzbtomedia.DELUGEHOST,
-                             nzbtomedia.DELUGEPORT)
-                TorrentClass = DelugeClient()
-                TorrentClass.connect(host =nzbtomedia.DELUGEHOST, port =nzbtomedia.DELUGEPORT, username =nzbtomedia.DELUGEUSR, password =nzbtomedia.DELUGEPWD)
-            except:
-                logger.error("Failed to connect to deluge")
-
-    return TorrentClass
+    cleanup_directories(inputCategory, processCategories, result, outputDestination)
+    return result
 
 def pause_torrent(clientAgent, TorrentClass, inputHash, inputID, inputName):
     # if we are using links with Torrents it means we need to pause it in order to access the files
@@ -279,25 +250,6 @@ def resume_torrent(clientAgent, TorrentClass, inputHash, inputID, result, inputN
                 TorrentClass.core.resume_torrent([inputID])
         time.sleep(5)
 
-def cleanup_output(inputCategory, processCategories, result, outputDestination): 
-    if inputCategory in processCategories and result == 0 and os.path.isdir(outputDestination):
-        num_files_new = int(0)
-        file_list = []
-        for dirpath, dirnames, filenames in os.walk(outputDestination):
-            for file in filenames:
-                filePath = os.path.join(dirpath, file)
-                fileName, fileExtension = os.path.splitext(file)
-                if fileExtension in nzbtomedia.MEDIACONTAINER or fileExtension in nzbtomedia.METACONTAINER:
-                    num_files_new += 1
-                    file_list.append(file)
-        if num_files_new is 0 or int(nzbtomedia.CFG["Torrent"]["forceClean"]) is 1:
-            logger.postprocess("All files have been processed. Cleaning outputDirectory %s", outputDestination)
-            shutil.rmtree(outputDestination)
-        else:
-            logger.postprocess("outputDirectory %s still contains %s media and/or meta files. This directory will not be removed.", outputDestination, num_files_new)
-            for item in file_list:
-                logger.debug("media/meta file found: %s", item)
-
 def external_script(outputDestination, torrentName, torrentLabel):
 
     final_result = int(0) # start at 0.
@@ -308,12 +260,12 @@ def external_script(outputDestination, torrentName, torrentLabel):
             filePath = os.path.join(dirpath, file)
             fileName, fileExtension = os.path.splitext(file)
 
-            if fileExtension in user_script_mediaExtensions or "ALL" in user_script_mediaExtensions:
+            if fileExtension in nzbtomedia.USER_SCRIPT_MEDIAEXTENSIONS or "ALL" in nzbtomedia.USER_SCRIPT_MEDIAEXTENSIONS:
                 num_files = num_files + 1
-                if user_script_runOnce == 1 and num_files > 1: # we have already run once, so just continue to get number of files.
+                if nzbtomedia.USER_SCRIPT_RUNONCE == 1 and num_files > 1: # we have already run once, so just continue to get number of files.
                     continue
-                command = [user_script]
-                for param in user_script_param:
+                command = [nzbtomedia.USER_SCRIPT]
+                for param in nzbtomedia.USER_SCRIPT_PARAM:
                     if param == "FN":
                         command.append(file)
                         continue
@@ -327,7 +279,7 @@ def external_script(outputDestination, torrentName, torrentLabel):
                         command.append(torrentLabel)
                         continue
                     elif param == "DN":
-                        if user_script_runOnce == 1:
+                        if nzbtomedia.USER_SCRIPT_RUNONCE == 1:
                             command.append(outputDestination)
                         else:
                             command.append(dirpath)
@@ -342,7 +294,7 @@ def external_script(outputDestination, torrentName, torrentLabel):
                 try:
                     p = Popen(command)
                     res = p.wait()
-                    if str(res) in user_script_successCodes: # Linux returns 0 for successful.
+                    if str(res) in nzbtomedia.USER_SCRIPT_SUCCESSCODES: # Linux returns 0 for successful.
                         logger.postprocess("UserScript %s was successfull", command[0])
                         result = int(0)
                     else:
@@ -354,60 +306,67 @@ def external_script(outputDestination, torrentName, torrentLabel):
                     result = int(1)
                 final_result = final_result + result
 
-    time.sleep(user_delay)
+    time.sleep(nzbtomedia.USER_DELAY)
     num_files_new = int(0)
     for dirpath, dirnames, filenames in os.walk(outputDestination):
         for file in filenames:
             filePath = os.path.join(dirpath, file)
             fileName, fileExtension = os.path.splitext(file)
 
-            if fileExtension in user_script_mediaExtensions or user_script_mediaExtensions == "ALL":
+            if fileExtension in nzbtomedia.USER_SCRIPT_MEDIAEXTENSIONS or nzbtomedia.USER_SCRIPT_MEDIAEXTENSIONS == "ALL":
                 num_files_new = num_files_new + 1
 
-    if user_script_clean == int(1) and num_files_new == int(0) and final_result == int(0):
+    if nzbtomedia.USER_SCRIPT_CLEAN == int(1) and num_files_new == int(0) and final_result == int(0):
         logger.postprocess("All files have been processed. Cleaning outputDirectory %s", outputDestination)
         shutil.rmtree(outputDestination)
-    elif user_script_clean == int(1) and num_files_new != int(0):
+    elif nzbtomedia.USER_SCRIPT_CLEAN == int(1) and num_files_new != int(0):
         logger.postprocess("%s files were processed, but %s still remain. outputDirectory will not be cleaned.", num_files, num_files_new)
     return final_result
 
-if __name__ == "__main__":
+def main(args):
     # Initialize the config
     nzbtomedia.initialize()
 
-    # EXAMPLE VALUES:
-    if not "NONE" in nzbtomedia.USER_SCRIPT_CATEGORIES:
-        user_script_mediaExtensions = (nzbtomedia.CFG["UserScript"]["user_script_mediaExtensions"])
-        user_script = nzbtomedia.CFG["UserScript"]["user_script_path"]
-        user_script_param = (nzbtomedia.CFG["UserScript"]["user_script_param"])
-        user_script_successCodes = (nzbtomedia.CFG["UserScript"]["user_script_successCodes"])
-        user_script_clean = int(nzbtomedia.CFG["UserScript"]["user_script_clean"])
-        user_delay = int(nzbtomedia.CFG["UserScript"]["delay"])
-        user_script_runOnce = int(nzbtomedia.CFG["UserScript"]["user_script_runOnce"])
+    logger.postprocess("#########################################################")
+    logger.postprocess("## ..::[%s]::.. :: STARTING", os.path.splitext(os.path.basename(os.path.normpath(os.path.abspath(__file__))))[0])
+    logger.postprocess("#########################################################")
 
-    transcode = int(nzbtomedia.CFG["Transcoder"]["transcode"])
+    # debug command line options
+    logger.debug("Options passed into TorrentToMedia: " + str(args))
 
-    n = 0
-    for arg in sys.argv:
-        logger.debug("arg %s is: %s", n, arg)
-        n = n+1
+    # Post-Processing Result
+    result = 0
+
+    # clientAgent for Torrents
+    clientAgent = nzbtomedia.CLIENTAGENT
 
     try:
-        inputDirectory, inputName, inputCategory, inputHash, inputID = parse_args(nzbtomedia.CLIENTAGENT)
+        inputDirectory, inputName, inputCategory, inputHash, inputID = parse_args(clientAgent, args)
     except:
         logger.error("There was a problem loading variables")
-        sys.exit(-1)
+        return -1
 
         # check if this is a manual run
     if inputDirectory is None:
+        clientAgent = 'manual'
+        logger.warning("Invalid number of arguments received from client, Switching to manual run mode ...")
         for section, subsection in nzbtomedia.SUBSECTIONS.items():
             for category in subsection:
                 if nzbtomedia.CFG[section][category].isenabled():
                     dirNames = get_dirnames(section, category)
                     for dirName in dirNames:
                         logger.postprocess("Running %s:%s as a manual run for folder %s ...", section, category, dirName)
-                        main(dirName, os.path.basename(dirName), category, inputHash, inputID)
+                        results = processTorrent(dirName, os.path.basename(dirName), category, inputHash, inputID, clientAgent)
+                        if results != 0:
+                            result = results
+                            logger.error("A problem was reported when trying to manually run %s:%s.", section, category)
                 else:
                     logger.warning("%s:%s is DISABLED, you can enable this in autoProcessMedia.cfg ...", section, category)
     else:
-        main(inputDirectory, inputName, inputCategory, inputHash, inputID)
+        result = processTorrent(inputDirectory, inputName, inputCategory, inputHash, inputID, clientAgent)
+
+    logger.postprocess("All done.")
+    sys.exit(result)
+
+if __name__ == "__main__":
+    main(sys.argv)

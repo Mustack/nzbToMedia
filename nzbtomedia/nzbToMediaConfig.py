@@ -1,7 +1,7 @@
 import os
 import shutil
 import nzbtomedia
-import lib.configobj
+from lib.configobj import *
 from itertools import chain
 
 class Sections(dict):
@@ -34,7 +34,7 @@ class Sections(dict):
                 to_return.update({section:{key:dict.__getitem__(subsection, key)}})
         return to_return
 
-class Section(lib.configobj.Section):
+class Section(configobj.Section):
     def isenabled(section):
         # checks if subsection enabled, returns true/false if subsection specified otherwise returns true/false in {}
         if section:
@@ -60,11 +60,11 @@ class Section(lib.configobj.Section):
                 result.update({section: subsection})
         return result
 
-class ConfigObj(lib.configobj.ConfigObj, Section):
+class ConfigObj(configobj.ConfigObj, Section):
     def __init__(self, *args, **kw):
         if len(args) == 0:
             args = (nzbtomedia.CONFIG_FILE,)
-        super(lib.configobj.ConfigObj, self).__init__(*args, **kw)
+        super(configobj.ConfigObj, self).__init__(*args, **kw)
         self.interpolation = False
 
     @staticmethod
@@ -90,7 +90,7 @@ class ConfigObj(lib.configobj.ConfigObj, Section):
             pass
 
         # check for autoProcessMedia.cfg and autoProcessMedia.cfg.spec and if they don't exist return and fail
-        if not CFG_NEW or not CFG_OLD:
+        if CFG_NEW is None or CFG_OLD is None:
             return False
 
         subsections = {}
@@ -143,25 +143,28 @@ class ConfigObj(lib.configobj.ConfigObj, Section):
                                 value = 'hard'
                             else:
                                 value = 'no'
+                    if option == "forceClean":
+                        CFG_NEW['General']['force_clean'] = value
+                        values.pop(option)
             return values
 
         def process_section(section, subsections=None):
             if subsections:
                 for subsection in subsections:
                     if subsection in CFG_OLD.sections:
-                        values = CFG_OLD[subsection]
+                        values = cleanup_values(CFG_OLD[subsection], section)
                         if subsection not in CFG_NEW[section].sections:
                             CFG_NEW[section][subsection] = {}
                         for option, value in values.items():
                             CFG_NEW[section][subsection][option] = value
                     elif subsection in CFG_OLD[section].sections:
-                        values = CFG_OLD[section][subsection]
+                        values = cleanup_values(CFG_OLD[section][subsection], section)
                         if subsection not in CFG_NEW[section].sections:
                             CFG_NEW[section][subsection] = {}
                         for option, value in values.items():
                             CFG_NEW[section][subsection][option] = value
             else:
-                values = CFG_OLD[section]
+                values = cleanup_values(CFG_OLD[section], section)
                 if section not in CFG_NEW.sections:
                     CFG_NEW[section] = {}
                 for option, value in values.items():
@@ -174,161 +177,167 @@ class ConfigObj(lib.configobj.ConfigObj, Section):
                 subsection = section
                 section = ''.join([k for k,v in subsections.iteritems() if subsection in v])
                 process_section(section, subsection)
-                #[[v.remove(c) for c in v if c in subsection] for k, v in subsections.items() if k == section]
             elif section in subsections.keys():
                 subsection = subsections[section]
                 process_section(section, subsection)
-                #[[v.remove(c) for c in v if c in subsection] for k,v in subsections.items() if k == section]
             elif section in CFG_OLD.keys():
                 process_section(section, subsection)
 
         # create a backup of our old config
-        if os.path.isfile(nzbtomedia.CONFIG_FILE):
-            cfgbak_name = nzbtomedia.CONFIG_FILE + ".old"
-            if os.path.isfile(cfgbak_name):  # remove older backups
-                os.unlink(cfgbak_name)
-            os.rename(nzbtomedia.CONFIG_FILE, cfgbak_name)
+        CFG_OLD.filename = nzbtomedia.CONFIG_FILE + ".old"
+        CFG_OLD.write()
 
-        # writing our configuration file to 'autoProcessMedia.cfg'
-        with open(nzbtomedia.CONFIG_FILE, 'wb') as configFile:
-            CFG_NEW.write(configFile)
+        # write our new config to autoProcessMedia.cfg
+        CFG_NEW.filename = nzbtomedia.CONFIG_FILE
+        CFG_NEW.write()
 
         return True
 
     @staticmethod
     def addnzbget():
-        CFG_NEW = nzbtomedia.CFG
-        section = "CouchPotato"
-        envCatKey = 'NZBPO_CPSCATEGORY'
-        envKeys = ['ENABLED', 'APIKEY', 'HOST', 'PORT', 'SSL', 'WEB_ROOT', 'DELAY', 'METHOD', 'DELETE_FAILED', 'REMOTECPS', 'WAIT_FOR', 'TIMEPERGIB']
-        cfgKeys = ['enabled', 'apikey', 'host', 'port', 'ssl', 'web_root', 'delay', 'method', 'delete_failed', 'remoteCPS', 'wait_for', 'TimePerGiB']
-        if os.environ.has_key(envCatKey):
+        # load configs into memory
+        CFG_NEW = config()
+
+        try:
+            section = "General"
+            envKeys = ['AUTO_UPDATE']
+            cfgKeys = ['auto_update']
             for index in range(len(envKeys)):
-                key = 'NZBPO_CPS' + envKeys[index]
+                key = 'NZBPO_' + envKeys[index]
                 if os.environ.has_key(key):
                     option = cfgKeys[index]
                     value = os.environ[key]
-                    if os.environ[envCatKey] not in CFG_NEW[section].sections:
-                        CFG_NEW[section][os.environ[envCatKey]] = {}
-                    CFG_NEW[section][os.environ[envCatKey]][option] = value
-            CFG_NEW[section][os.environ[envCatKey]]['enabled'] = 1
+                    CFG_NEW[section][option] = value
 
-        section = "SickBeard"
-        envCatKey = 'NZBPO_SBCATEGORY'
-        envKeys = ['ENABLED', 'HOST', 'PORT', 'USERNAME', 'PASSWORD', 'SSL', 'WEB_ROOT', 'WATCH_DIR', 'FORK', 'DELETE_FAILED', 'DELAY', 'TIMEPERGIB', 'TORRENT_NOLINK', 'NZBEXTRACTIONBY']
-        cfgKeys = ['enabled', 'host', 'port', 'username', 'password', 'ssl', 'web_root', 'watch_dir', 'fork', 'delete_failed', 'delay', 'TimePerGiB', 'Torrent_NoLink', 'nzbExtractionBy']
-        if os.environ.has_key(envCatKey):
+            section = "CouchPotato"
+            envCatKey = 'NZBPO_CPSCATEGORY'
+            envKeys = ['ENABLED', 'APIKEY', 'HOST', 'PORT', 'SSL', 'WEB_ROOT', 'DELAY', 'METHOD', 'DELETE_FAILED', 'REMOTECPS', 'WAIT_FOR', 'TIMEPERGIB']
+            cfgKeys = ['enabled', 'apikey', 'host', 'port', 'ssl', 'web_root', 'delay', 'method', 'delete_failed', 'remoteCPS', 'wait_for', 'TimePerGiB']
+            if os.environ.has_key(envCatKey):
+                for index in range(len(envKeys)):
+                    key = 'NZBPO_CPS' + envKeys[index]
+                    if os.environ.has_key(key):
+                        option = cfgKeys[index]
+                        value = os.environ[key]
+                        if os.environ[envCatKey] not in CFG_NEW[section].sections:
+                            CFG_NEW[section][os.environ[envCatKey]] = {}
+                        CFG_NEW[section][os.environ[envCatKey]][option] = value
+                CFG_NEW[section][os.environ[envCatKey]]['enabled'] = 1
+
+            section = "SickBeard"
+            envCatKey = 'NZBPO_SBCATEGORY'
+            envKeys = ['ENABLED', 'HOST', 'PORT', 'USERNAME', 'PASSWORD', 'SSL', 'WEB_ROOT', 'WATCH_DIR', 'FORK', 'DELETE_FAILED', 'DELAY', 'TIMEPERGIB', 'TORRENT_NOLINK', 'NZBEXTRACTIONBY']
+            cfgKeys = ['enabled', 'host', 'port', 'username', 'password', 'ssl', 'web_root', 'watch_dir', 'fork', 'delete_failed', 'delay', 'TimePerGiB', 'Torrent_NoLink', 'nzbExtractionBy']
+            if os.environ.has_key(envCatKey):
+                for index in range(len(envKeys)):
+                    key = 'NZBPO_SB' + envKeys[index]
+                    if os.environ.has_key(key):
+                        option = cfgKeys[index]
+                        value = os.environ[key]
+                        if os.environ[envCatKey] not in CFG_NEW[section].sections:
+                            CFG_NEW[section][os.environ[envCatKey]] = {}
+                        CFG_NEW[section][os.environ[envCatKey]][option] = value
+                CFG_NEW[section][os.environ[envCatKey]]['enabled'] = 1
+
+            section = "HeadPhones"
+            envCatKey = 'NZBPO_HPCATEGORY'
+            envKeys = ['ENABLED', 'APIKEY', 'HOST', 'PORT', 'SSL', 'WEB_ROOT', 'DELAY', 'TIMEPERGIB']
+            cfgKeys = ['enabled', 'apikey', 'host', 'port', 'ssl', 'web_root', 'delay', 'TimePerGiB']
+            if os.environ.has_key(envCatKey):
+                for index in range(len(envKeys)):
+                    key = 'NZBPO_HP' + envKeys[index]
+                    if os.environ.has_key(key):
+                        option = cfgKeys[index]
+                        value = os.environ[key]
+                        if os.environ[envCatKey] not in CFG_NEW[section].sections:
+                            CFG_NEW[section][os.environ[envCatKey]] = {}
+                        CFG_NEW[section][os.environ[envCatKey]][option] = value
+                CFG_NEW[section][os.environ[envCatKey]]['enabled'] = 1
+
+            section = "Mylar"
+            envCatKey = 'NZBPO_MYCATEGORY'
+            envKeys = ['ENABLED', 'HOST', 'PORT', 'USERNAME', 'PASSWORD', 'SSL', 'WEB_ROOT']
+            cfgKeys = ['enabled', 'host', 'port', 'username', 'password', 'ssl', 'web_root']
+            if os.environ.has_key(envCatKey):
+                for index in range(len(envKeys)):
+                    key = 'NZBPO_MY' + envKeys[index]
+                    if os.environ.has_key(key):
+                        option = cfgKeys[index]
+                        value = os.environ[key]
+                        if os.environ[envCatKey] not in CFG_NEW[section].sections:
+                            CFG_NEW[section][os.environ[envCatKey]] = {}
+                        CFG_NEW[section][os.environ[envCatKey]][option] = value
+                CFG_NEW[section][os.environ[envCatKey]]['enabled'] = 1
+
+            section = "Gamez"
+            envCatKey = 'NZBPO_GZCATEGORY'
+            envKeys = ['ENABLED', 'APIKEY', 'HOST', 'PORT', 'SSL', 'WEB_ROOT']
+            cfgKeys = ['enabled', 'apikey', 'host', 'port', 'ssl', 'web_root']
+            if os.environ.has_key(envCatKey):
+                for index in range(len(envKeys)):
+                    key = 'NZBPO_GZ' + envKeys[index]
+                    if os.environ.has_key(key):
+                        option = cfgKeys[index]
+                        value = os.environ[key]
+                        if os.environ[envCatKey] not in CFG_NEW[section].sections:
+                            CFG_NEW[section][os.environ[envCatKey]] = {}
+                        CFG_NEW[section][os.environ[envCatKey]][option] = value
+                CFG_NEW[section][os.environ[envCatKey]]['enabled'] = 1
+
+            section = "NzbDrone"
+            envCatKey = 'NZBPO_NDCATEGORY'
+            envKeys = ['ENABLED', 'HOST', 'PORT', 'USERNAME', 'PASSWORD', 'SSL', 'WEB_ROOT', 'WATCH_DIR', 'FORK', 'DELETE_FAILED', 'DELAY', 'TIMEPERGIB', 'TORRENT_NOLINK', 'NZBEXTRACTIONBY']
+            cfgKeys = ['enabled', 'host', 'port', 'username', 'password', 'ssl', 'web_root', 'watch_dir', 'fork', 'delete_failed', 'delay', 'TimePerGiB', 'Torrent_NoLink', 'nzbExtractionBy']
+            if os.environ.has_key(envCatKey):
+                for index in range(len(envKeys)):
+                    key = 'NZBPO_ND' + envKeys[index]
+                    if os.environ.has_key(key):
+                        option = cfgKeys[index]
+                        value = os.environ[key]
+                        if os.environ[envCatKey] not in CFG_NEW[section].sections:
+                            CFG_NEW[section][os.environ[envCatKey]] = {}
+                        CFG_NEW[section][os.environ[envCatKey]][option] = value
+                CFG_NEW[section][os.environ[envCatKey]]['enabled'] = 1
+
+            section = "Extensions"
+            envKeys = ['COMPRESSEDEXTENSIONS', 'MEDIAEXTENSIONS', 'METAEXTENSIONS']
+            cfgKeys = ['compressedExtensions', 'mediaExtensions', 'metaExtensions']
             for index in range(len(envKeys)):
-                key = 'NZBPO_SB' + envKeys[index]
+                key = 'NZBPO_' + envKeys[index]
                 if os.environ.has_key(key):
                     option = cfgKeys[index]
                     value = os.environ[key]
-                    if os.environ[envCatKey] not in CFG_NEW[section].sections:
-                        CFG_NEW[section][os.environ[envCatKey]] = {}
-                    CFG_NEW[section][os.environ[envCatKey]][option] = value
-            CFG_NEW[section][os.environ[envCatKey]]['enabled'] = 1
+                    CFG_NEW[section][option] = value
 
-        section = "HeadPhones"
-        envCatKey = 'NZBPO_HPCATEGORY'
-        envKeys = ['ENABLED', 'APIKEY', 'HOST', 'PORT', 'SSL', 'WEB_ROOT', 'DELAY', 'TIMEPERGIB']
-        cfgKeys = ['enabled', 'apikey', 'host', 'port', 'ssl', 'web_root', 'delay', 'TimePerGiB']
-        if os.environ.has_key(envCatKey):
+            section = "Transcoder"
+            envKeys = ['TRANSCODE', 'DUPLICATE', 'IGNOREEXTENSIONS', 'OUTPUTVIDEOEXTENSION', 'OUTPUTVIDEOCODEC', 'OUTPUTVIDEOPRESET', 'OUTPUTVIDEOFRAMERATE', 'OUTPUTVIDEOBITRATE', 'OUTPUTAUDIOCODEC', 'OUTPUTAUDIOBITRATE', 'OUTPUTSUBTITLECODEC']
+            cfgKeys = ['transcode', 'duplicate', 'ignoreExtensions', 'outputVideoExtension', 'outputVideoCodec', 'outputVideoPreset', 'outputVideoFramerate', 'outputVideoBitrate', 'outputAudioCodec', 'outputAudioBitrate', 'outputSubtitleCodec']
             for index in range(len(envKeys)):
-                key = 'NZBPO_HP' + envKeys[index]
+                key = 'NZBPO_' + envKeys[index]
                 if os.environ.has_key(key):
                     option = cfgKeys[index]
                     value = os.environ[key]
-                    if os.environ[envCatKey] not in CFG_NEW[section].sections:
-                        CFG_NEW[section][os.environ[envCatKey]] = {}
-                    CFG_NEW[section][os.environ[envCatKey]][option] = value
-            CFG_NEW[section][os.environ[envCatKey]]['enabled'] = 1
+                    CFG_NEW[section][option] = value
 
-        section = "Mylar"
-        envCatKey = 'NZBPO_MYCATEGORY'
-        envKeys = ['ENABLED', 'HOST', 'PORT', 'USERNAME', 'PASSWORD', 'SSL', 'WEB_ROOT']
-        cfgKeys = ['enabled', 'host', 'port', 'username', 'password', 'ssl', 'web_root']
-        if os.environ.has_key(envCatKey):
+            section = "WakeOnLan"
+            envKeys = ['WAKE', 'HOST', 'PORT', 'MAC']
+            cfgKeys = ['wake', 'host', 'port', 'mac']
             for index in range(len(envKeys)):
-                key = 'NZBPO_MY' + envKeys[index]
+                key = 'NZBPO_WOL' + envKeys[index]
                 if os.environ.has_key(key):
                     option = cfgKeys[index]
                     value = os.environ[key]
-                    if os.environ[envCatKey] not in CFG_NEW[section].sections:
-                        CFG_NEW[section][os.environ[envCatKey]] = {}
-                    CFG_NEW[section][os.environ[envCatKey]][option] = value
-            CFG_NEW[section][os.environ[envCatKey]]['enabled'] = 1
+                    CFG_NEW[section][option] = value
 
-        section = "Gamez"
-        envCatKey = 'NZBPO_GZCATEGORY'
-        envKeys = ['ENABLED', 'APIKEY', 'HOST', 'PORT', 'SSL', 'WEB_ROOT']
-        cfgKeys = ['enabled', 'apikey', 'host', 'port', 'ssl', 'web_root']
-        if os.environ.has_key(envCatKey):
-            for index in range(len(envKeys)):
-                key = 'NZBPO_GZ' + envKeys[index]
-                if os.environ.has_key(key):
-                    option = cfgKeys[index]
-                    value = os.environ[key]
-                    if os.environ[envCatKey] not in CFG_NEW[section].sections:
-                        CFG_NEW[section][os.environ[envCatKey]] = {}
-                    CFG_NEW[section][os.environ[envCatKey]][option] = value
-            CFG_NEW[section][os.environ[envCatKey]]['enabled'] = 1
+        except:
+            return False
 
-        section = "NzbDrone"
-        envCatKey = 'NZBPO_NDCATEGORY'
-        envKeys = ['ENABLED', 'HOST', 'PORT', 'USERNAME', 'PASSWORD', 'SSL', 'WEB_ROOT', 'WATCH_DIR', 'FORK', 'DELETE_FAILED', 'DELAY', 'TIMEPERGIB', 'TORRENT_NOLINK', 'NZBEXTRACTIONBY']
-        cfgKeys = ['enabled', 'host', 'port', 'username', 'password', 'ssl', 'web_root', 'watch_dir', 'fork', 'delete_failed', 'delay', 'TimePerGiB', 'Torrent_NoLink', 'nzbExtractionBy']
-        if os.environ.has_key(envCatKey):
-            for index in range(len(envKeys)):
-                key = 'NZBPO_ND' + envKeys[index]
-                if os.environ.has_key(key):
-                    option = cfgKeys[index]
-                    value = os.environ[key]
-                    if os.environ[envCatKey] not in CFG_NEW[section].sections:
-                        CFG_NEW[section][os.environ[envCatKey]] = {}
-                    CFG_NEW[section][os.environ[envCatKey]][option] = value
-            CFG_NEW[section][os.environ[envCatKey]]['enabled'] = 1
+        # write our new config to autoProcessMedia.cfg
+        CFG_NEW.filename = nzbtomedia.CONFIG_FILE
+        CFG_NEW.write()
 
-        section = "Extensions"
-        envKeys = ['COMPRESSEDEXTENSIONS', 'MEDIAEXTENSIONS', 'METAEXTENSIONS']
-        cfgKeys = ['compressedExtensions', 'mediaExtensions', 'metaExtensions']
-        for index in range(len(envKeys)):
-            key = 'NZBPO_' + envKeys[index]
-            if os.environ.has_key(key):
-                option = cfgKeys[index]
-                value = os.environ[key]
-                CFG_NEW[section][option] = value
+        return True
 
-        section = "Transcoder"
-        envKeys = ['TRANSCODE', 'DUPLICATE', 'IGNOREEXTENSIONS', 'OUTPUTVIDEOEXTENSION', 'OUTPUTVIDEOCODEC', 'OUTPUTVIDEOPRESET', 'OUTPUTVIDEOFRAMERATE', 'OUTPUTVIDEOBITRATE', 'OUTPUTAUDIOCODEC', 'OUTPUTAUDIOBITRATE', 'OUTPUTSUBTITLECODEC']
-        cfgKeys = ['transcode', 'duplicate', 'ignoreExtensions', 'outputVideoExtension', 'outputVideoCodec', 'outputVideoPreset', 'outputVideoFramerate', 'outputVideoBitrate', 'outputAudioCodec', 'outputAudioBitrate', 'outputSubtitleCodec']
-        for index in range(len(envKeys)):
-            key = 'NZBPO_' + envKeys[index]
-            if os.environ.has_key(key):
-                option = cfgKeys[index]
-                value = os.environ[key]
-                CFG_NEW[section][option] = value
-
-        section = "WakeOnLan"
-        envKeys = ['WAKE', 'HOST', 'PORT', 'MAC']
-        cfgKeys = ['wake', 'host', 'port', 'mac']
-        for index in range(len(envKeys)):
-            key = 'NZBPO_WOL' + envKeys[index]
-            if os.environ.has_key(key):
-                option = cfgKeys[index]
-                value = os.environ[key]
-                CFG_NEW[section][option] = value
-
-        # create a backup of our old config
-        if os.path.isfile(nzbtomedia.CONFIG_FILE):
-            cfgbak_name = nzbtomedia.CONFIG_FILE + ".old"
-            if os.path.isfile(cfgbak_name):  # remove older backups
-                os.unlink(cfgbak_name)
-            os.rename(nzbtomedia.CONFIG_FILE, cfgbak_name)
-
-        # writing our configuration file to 'autoProcessMedia.cfg'
-        with open(nzbtomedia.CONFIG_FILE, 'wb') as configFile:
-            CFG_NEW.write(configFile)
-
-lib.configobj.Section = Section
-lib.configobj.ConfigObj = ConfigObj
+configobj.Section = Section
+configobj.ConfigObj = ConfigObj
 config = ConfigObj
