@@ -45,11 +45,6 @@
 # set this if using a reverse proxy.
 #cpsweb_root=
 
-# CouchPotato Postprocess Delay.
-#
-# must be at least 60 seconds.
-#cpsdelay=65
-
 # CouchPotato Postprocess Method (renamer, manage).
 #
 # use "renamer" for CPS renamer (default) or "manage" to call a manage update.
@@ -98,11 +93,6 @@
 #
 # set this if using a reverse proxy.
 #sbweb_root=
-
-# SickBeard delay
-#
-# Set the number of seconds to wait before calling post-process in SickBeard.
-#sbdelay=0
 
 # SickBeard watch directory.
 #
@@ -175,11 +165,6 @@
 #
 # set this if using a reverse proxy.
 #hpweb_root=
-
-# HeadPhones Postprocess Delay.
-#
-# set as required to ensure correct processing.
-#hpdelay=65
 
 ## Mylar
 
@@ -301,27 +286,25 @@ from nzbtomedia import logger
 
 # post-processing
 def process(nzbDir, inputName=None, status=0, clientAgent='manual', download_id=None, inputCategory=None):
+    result = 0
+
     # auto-detect section
     section = nzbtomedia.CFG.findsection(inputCategory)
+    if section:
+        logger.info("Sending %s to %s for post-processing ..." % (inputName, str(section).upper()))
+    else:
+        logger.error("We could not find a section with containing a download category labeled %s in your autoProcessMedia.cfg, Exiting!" % inputCategory)
 
     if nzbtomedia.CFG["CouchPotato"][inputCategory]:
-        logger.postprocess("Calling CouchPotatoServer to post-process: %s", inputName)
         result = autoProcessMovie().process(nzbDir, inputName, status, clientAgent, download_id, inputCategory)
     elif nzbtomedia.CFG["SickBeard", "NzbDrone"][inputCategory]:
-        logger.postprocess("Calling Sick-Beard to post-process: %s", inputName)
         result = autoProcessTV().processEpisode(nzbDir, inputName, status, clientAgent, inputCategory)
     elif nzbtomedia.CFG["HeadPhones"][inputCategory]:
-        logger.postprocess("Calling HeadPhones to post-process: %s", inputName)
         result = autoProcessMusic().process(nzbDir, inputName, status, clientAgent, inputCategory)
     elif nzbtomedia.CFG["Mylar"][inputCategory]:
-        logger.postprocess("Calling Mylar to post-process: %s", inputName)
         result = autoProcessComics().processEpisode(nzbDir, inputName, status, clientAgent, inputCategory)
     elif nzbtomedia.CFG["Gamez"][inputCategory]:
-        logger.postprocess("Calling Gamez to post-process: %s", inputName)
         result = autoProcessGames().process(nzbDir, inputName, status, clientAgent, inputCategory)
-    else:
-        logger.postprocess("We could not find a section with the download category of %s in your autoProcessMedia.cfg. Exiting.", inputCategory)
-        result = -1
 
     if result == 0:
         # Clean up any leftover files
@@ -333,12 +316,15 @@ def main(args, section=None):
     # Initialize the config
     nzbtomedia.initialize(section)
 
-    logger.postprocess("#########################################################")
-    logger.postprocess("## ..::[%s]::.. :: STARTING", os.path.splitext(os.path.basename(os.path.normpath(os.path.abspath(__file__))))[0])
-    logger.postprocess("#########################################################")
+    # clientAgent for NZBs
+    clientAgent = nzbtomedia.NZB_CLIENTAGENT
+
+    logger.info("#########################################################")
+    logger.info("## ..::[%s]::.. ##" % os.path.basename(__file__))
+    logger.info("#########################################################")
 
     # debug command line options
-    logger.debug("Options passed into nzbToMedia: " + str(args))
+    logger.debug("Options passed into nzbToMedia: %s" % args)
 
     # Post-Processing Result
     result = 0
@@ -347,7 +333,7 @@ def main(args, section=None):
     # NZBGet V11+
     # Check if the script is called from nzbget 11.0 or later
     if os.environ.has_key('NZBOP_SCRIPTDIR') and not os.environ['NZBOP_VERSION'][0:5] < '11.0':
-        logger.postprocess("Script triggered from NZBGet (11.0 or later).")
+        logger.info("Script triggered from NZBGet (11.0 or later).")
 
         if os.environ['NZBOP_UNPACK'] != 'yes':
             logger.error("Please enable option \"Unpack\" in nzbget configuration file, exiting")
@@ -356,7 +342,7 @@ def main(args, section=None):
         # Check par status
         if os.environ['NZBPP_PARSTATUS'] == '3':
             logger.warning("Par-check successful, but Par-repair disabled, exiting")
-            logger.postprocess("Please check your Par-repair settings for future downloads.")
+            logger.info("Please check your Par-repair settings for future downloads.")
             sys.exit(nzbtomedia.NZBGET_POSTPROCESS_NONE)
 
         if os.environ['NZBPP_PARSTATUS'] == '1' or os.environ['NZBPP_PARSTATUS'] == '4':
@@ -373,16 +359,16 @@ def main(args, section=None):
 
             if os.environ['NZBPP_HEALTH'] < 1000:
                 logger.warning("Download health is compromised and Par-check/repair disabled or no .par2 files found. Setting status \"failed\"")
-                logger.postprocess("Please check your Par-check/repair settings for future downloads.")
+                logger.info("Please check your Par-check/repair settings for future downloads.")
                 status = 1
 
             else:
-                logger.postprocess("Par-check/repair disabled or no .par2 files found, and Unpack not required. Health is ok so handle as though download successful")
-                logger.postprocess("Please check your Par-check/repair settings for future downloads.")
+                logger.info("Par-check/repair disabled or no .par2 files found, and Unpack not required. Health is ok so handle as though download successful")
+                logger.info("Please check your Par-check/repair settings for future downloads.")
 
         # Check if destination directory exists (important for reprocessing of history items)
         if not os.path.isdir(os.environ['NZBPP_DIRECTORY']):
-            logger.error("Nothing to post-process: destination directory %s doesn't exist. Setting status \"failed\"", os.environ['NZBPP_DIRECTORY'])
+            logger.error("Nothing to post-process: destination directory %s doesn't exist. Setting status failed" % (os.environ['NZBPP_DIRECTORY']))
             status = 1
 
         # Check for download_id to pass to CouchPotato
@@ -391,7 +377,8 @@ def main(args, section=None):
             download_id = os.environ['NZBPR_COUCHPOTATO']
 
         # All checks done, now launching the script.
-        result = process(os.environ['NZBPP_DIRECTORY'], inputName=os.environ['NZBPP_NZBFILENAME'], status=status, clientAgent = "nzbget", download_id=download_id, inputCategory=os.environ['NZBPP_CATEGORY'])
+        clientAgent = 'nzbget'
+        result = process(os.environ['NZBPP_DIRECTORY'], inputName=os.environ['NZBPP_NZBFILENAME'], status=status, clientAgent=clientAgent, download_id=download_id, inputCategory=os.environ['NZBPP_CATEGORY'])
     # SABnzbd Pre 0.7.17
     elif len(args) == nzbtomedia.SABNZB_NO_OF_ARGUMENTS:
         # SABnzbd argv:
@@ -402,8 +389,9 @@ def main(args, section=None):
         # 5 User-defined category
         # 6 Group that the NZB was posted in e.g. alt.binaries.x
         # 7 Status of post processing. 0 = OK, 1=failed verification, 2=failed unpack, 3=1+2
-        logger.postprocess("Script triggered from SABnzbd")
-        result = process(args[1], inputName=args[2], status=args[7], inputCategory=args[5], clientAgent = "sabnzbd", download_id='')
+        clientAgent = 'sabnzbd'
+        logger.info("Script triggered from SABnzbd")
+        result = process(args[1], inputName=args[2], status=args[7], inputCategory=args[5], clientAgent=clientAgent, download_id='')
     # SABnzbd 0.7.17+
     elif len(args) >= nzbtomedia.SABNZB_0717_NO_OF_ARGUMENTS:
         # SABnzbd argv:
@@ -415,33 +403,34 @@ def main(args, section=None):
         # 6 Group that the NZB was posted in e.g. alt.binaries.x
         # 7 Status of post processing. 0 = OK, 1=failed verification, 2=failed unpack, 3=1+2
         # 8 Failure URL
-        logger.postprocess("Script triggered from SABnzbd 0.7.17+")
-        result = process(args[1], inputName=args[2], status=args[7], inputCategory=args[5], clientAgent = "sabnzbd", download_id='')
+        clientAgent = 'sabnzbd'
+        logger.info("Script triggered from SABnzbd 0.7.17+")
+        result = process(args[1], inputName=args[2], status=args[7], inputCategory=args[5], clientAgent=clientAgent, download_id='')
     else:
         # Perform Manual Run
         logger.warning("Invalid number of arguments received from client, Switching to manual run mode ...")
 
         # Loop and auto-process
+        clientAgent = 'manual'
         for section, subsection in nzbtomedia.SUBSECTIONS.items():
             for category in subsection:
                 if nzbtomedia.CFG[section][category].isenabled():
                     dirNames = get_dirnames(section, category)
                     for dirName in dirNames:
-                        logger.postprocess("nzbToMedia running %s:%s as a manual run on folder %s ...", section, category, dirName)
-                        results = process(dirName, os.path.basename(dirName), 0, inputCategory=category)
+                        logger.info("Starting manual run for %s:%s - Folder:%s" % (section, category, dirName))
+                        results = process(dirName, os.path.basename(dirName), 0, clientAgent=clientAgent, inputCategory=category)
                         if results != 0:
-                            logger.error("A problem was reported when trying to manually run %s:%s.", section, category)
+                            logger.error("A problem was reported when trying to perform a manual run for %s:%s." % (section, category))
                             result = results
-
                 else:
-                    logger.postprocess("nzbToMedia %s:%s is DISABLED, you can enable this in autoProcessMedia.cfg ...", section, category)
+                    logger.debug("nzbToMedia %s:%s is DISABLED" % (section, category))
 
     if result == 0:
-        logger.postprocess("The %s script completed successfully.", args[0])
+        logger.info("The %s script completed successfully." % args[0])
         if os.environ.has_key('NZBOP_SCRIPTDIR'): # return code for nzbget v11
             sys.exit(nzbtomedia.NZBGET_POSTPROCESS_SUCCESS)
     else:
-        logger.error("A problem was reported in the nzbToMedia script.", args[0])
+        logger.error("A problem was reported in the %s script." % args[0])
         if os.environ.has_key('NZBOP_SCRIPTDIR'): # return code for nzbget v11
             sys.exit(nzbtomedia.NZBGET_POSTPROCESS_ERROR)
 
